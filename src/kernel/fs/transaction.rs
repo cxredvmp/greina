@@ -16,14 +16,14 @@ use crate::{
 /// Represents a filesystem operation that buffers changes in memory before commiting them to
 /// persistent storage.
 pub struct Transaction<'a> {
-    fs: &'a FileSystem,
+    fs: &'a mut FileSystem,
     storage: &'a mut Storage,
     changes: HashMap<usize, Block>,
 }
 
 impl<'a> Transaction<'a> {
     /// Constructs a [Transaction] for the given filesystem and storage.
-    pub fn new(fs: &'a FileSystem, storage: &'a mut Storage) -> Self {
+    pub fn new(fs: &'a mut FileSystem, storage: &'a mut Storage) -> Self {
         Self {
             fs,
             storage,
@@ -65,12 +65,12 @@ impl<'a> Transaction<'a> {
             .get_node_byte_offset(node_index)
             .ok_or(Error::NodeIndexOutOfBounds)?;
         block.data[byte_offset..(byte_offset + NODE_SIZE)].copy_from_slice(node.as_bytes());
-        self.changes.insert(block_index, block);
+        self.write_block(block_index, &block);
         Ok(())
     }
 
-    /// Reads the block at a given block index.
-    fn read_block(&self, block_index: usize) -> Result<Block, Error> {
+    /// Reads the physical block at a given block index.
+    pub fn read_block(&self, block_index: usize) -> Result<Block, Error> {
         // Check cached changes
         match self.changes.get(&block_index) {
             Some(block) => Ok(*block),
@@ -79,6 +79,33 @@ impl<'a> Transaction<'a> {
                 .read_block(block_index)
                 .map_err(|_| Error::BlockIndexOutOfBounds),
         }
+    }
+
+    /// Writes the physical block at a given block index.
+    pub fn write_block(&mut self, block_index: usize, block: &Block) {
+        self.changes.insert(block_index, *block);
+    }
+
+    /// Reads the logical block that belongs to the node.
+    pub fn read_logical_block(&self, node: &Node, logical_index: usize) -> Result<Block, Error> {
+        let block_index = node
+            .get_physical_block(logical_index)
+            .ok_or(Error::LogicalIndexOutOfBounds)?;
+        self.read_block(block_index)
+    }
+
+    /// Writes the logical block that belongs to the node.
+    pub fn write_logical_block(
+        &mut self,
+        node: Node,
+        logical_index: usize,
+        block: &Block,
+    ) -> Result<(), Error> {
+        let block_index = node
+            .get_physical_block(logical_index)
+            .ok_or(Error::LogicalIndexOutOfBounds)?;
+        self.write_block(block_index, block);
+        Ok(())
     }
 
     /// Returns the index of the block in which the node resides.
@@ -103,4 +130,5 @@ impl<'a> Transaction<'a> {
 pub enum Error {
     BlockIndexOutOfBounds,
     NodeIndexOutOfBounds,
+    LogicalIndexOutOfBounds,
 }
