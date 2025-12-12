@@ -1,4 +1,9 @@
+use std::collections::BTreeMap;
+
 use crate::kernel::fs::node::{FileType, Node};
+
+/// Tracks opened files.
+pub type OpenFileTable = BTreeMap<FileDescriptorNumber, FileDescriptor>;
 
 /// Used to index the open file table.
 pub type FileDescriptorNumber = usize;
