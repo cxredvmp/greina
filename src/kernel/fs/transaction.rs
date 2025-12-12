@@ -317,7 +317,8 @@ impl<'a> Transaction<'a> {
     }
 
     /// Removes a hard link to the file with a given name.
-    pub fn unlink_file(&mut self, parent_index: usize, name: &str) -> Result<()> {
+    /// If `free` is true, deletes the node if `node.link_count` drops to 0, else it must be deallocated manually.
+    pub fn unlink_file(&mut self, parent_index: usize, name: &str, free: bool) -> Result<()> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
         let mut dir = self.read_directory(parent_index)?;
@@ -330,27 +331,30 @@ impl<'a> Transaction<'a> {
 
         let mut node = self.read_node(node_index)?;
         node.link_count -= 1;
-        if node.link_count == 0 {
-            // Deallocate the file
-            let extents = node
-                .get_mut_extents()
-                .iter_mut()
-                .take_while(|e| !e.is_null());
-            for extent in extents {
-                self.fs
-                    .block_map
-                    .free(extent.span())
-                    .map_err(Error::Alloc)?;
-                extent.nullify();
-            }
-            self.fs
-                .node_map
-                .free((node_index, node_index + 1))
-                .map_err(Error::Alloc)?;
-            node = Node::default();
+        if node.link_count == 0 && free {
+            self.delete_node(node_index)?;
+        } else {
+            self.write_node(node_index, node)?;
         }
-        self.write_node(node_index, node)?;
+        Ok(())
+    }
 
+    /// Deletes the node, deallocating its physical blocks.
+    pub fn delete_node(&mut self, node_index: usize) -> Result<()> {
+        let node = self.read_node(node_index)?;
+        let extents = node.get_extents().iter().take_while(|e| !e.is_null());
+        for extent in extents {
+            self.fs
+                .block_map
+                .free(extent.span())
+                .map_err(Error::Alloc)?;
+        }
+        self.fs
+            .node_map
+            .free((node_index, node_index + 1))
+            .map_err(Error::Alloc)?;
+        let node = Node::default();
+        self.write_node(node_index, node)?;
         Ok(())
     }
 
@@ -423,4 +427,10 @@ pub enum Error {
     FileNotFound,
     FileTypeNotLinkable,
     FileTypeNotTruncateable,
+}
+
+impl From<directory::Error> for Error {
+    fn from(value: directory::Error) -> Self {
+        Self::Dir(value)
+    }
 }
