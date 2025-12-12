@@ -177,7 +177,7 @@ impl Node {
 
 /// Represents file types.
 #[repr(u8)]
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[derive(TryFromBytes, IntoBytes, Immutable)]
 pub enum FileType {
     #[default]
