@@ -16,7 +16,7 @@ impl Storage {
     pub fn new(size: usize) -> Self {
         assert!(size.is_multiple_of(BLOCK_SIZE));
         let block_count = size / BLOCK_SIZE;
-        let blocks = vec![Block::new(); block_count].into_boxed_slice();
+        let blocks = vec![Block::default(); block_count].into_boxed_slice();
         Self { blocks }
     }
 

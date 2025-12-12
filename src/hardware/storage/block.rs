@@ -12,11 +12,16 @@ pub struct Block {
 }
 
 impl Block {
-    /// Constructs a zero-initialized [Block].
-    pub fn new() -> Self {
-        Self {
-            data: [0u8; BLOCK_SIZE],
-        }
+    /// Constructs a [Block] with given data.
+    /// Length of `data` must be smaller or equal to [BLOCK_SIZE].
+    ///
+    /// # Panics
+    /// Panics if:
+    /// - `data` is larger than [BLOCK_SIZE]
+    pub fn new(data: &[u8]) -> Self {
+        let mut block = Self::default();
+        block.data[..data.len()].copy_from_slice(data);
+        block
     }
 
     /// Casts a byte slice into a [Block] slice without copying.
@@ -25,5 +30,13 @@ impl Block {
     /// Panics if `bytes.len()` is not a multiple of [BLOCK_SIZE].
     pub fn slice_from_bytes(bytes: &[u8]) -> &[Self] {
         <[Self]>::ref_from_bytes(bytes).unwrap()
+    }
+}
+
+impl Default for Block {
+    fn default() -> Self {
+        Self {
+            data: [0u8; BLOCK_SIZE],
+        }
     }
 }

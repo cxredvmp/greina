@@ -69,11 +69,7 @@ impl<'a> Transaction<'a> {
     fn _sync_map(storage: &Storage, changes: &mut Changes, map: &AllocMap, map_offset: usize) {
         let bytes = map.as_slice().as_bytes();
         for (i, chunk) in bytes.chunks(BLOCK_SIZE).enumerate() {
-            let block_mem = Block::read_from_bytes(chunk).unwrap_or_else(|_| {
-                let mut block = Block::new();
-                block.data[..chunk.len()].copy_from_slice(chunk);
-                block
-            });
+            let block_mem = Block::read_from_bytes(chunk).unwrap_or_else(|_| Block::new(chunk));
             // Check if in-memory and stored blocks differ
             let block_index = map_offset + i;
             let block_stored = Self::_read_block(storage, changes, block_index)
@@ -194,7 +190,7 @@ impl<'a> Transaction<'a> {
             let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
             // Don't need to read if it's a freshly allocated block
             let mut block = if has_alloc {
-                Block::new()
+                Block::default()
             } else {
                 self.read_block(phys_block)?
             };
