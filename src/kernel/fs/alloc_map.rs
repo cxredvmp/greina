@@ -13,7 +13,8 @@ impl AllocMap {
         }
     }
 
-    /// Tries to find a contiguous span of free objects of `count` length, using the first-fit algorithm.
+    // NOTE: Explore using the Next-fit algorithm
+    /// Tries to find a contiguous span of free objects of `count` length, using the First-fit algorithm.
     /// On success, returns a (start, end) tuple, representing an exclusive range of indices.
     fn find_free(&self, count: usize) -> Option<(usize, usize)> {
         if count == 0 {
