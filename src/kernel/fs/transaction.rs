@@ -399,7 +399,7 @@ impl<'a> Transaction<'a> {
         todo!()
     }
 
-    /// Finds a node at `path` with `curr_dir` as parent (if `path` is relative).
+    /// Finds the node at `path`, using `curr_dir` as parent if `path` is relative.
     pub fn find_node(&self, path: &str, curr_dir: usize) -> Result<usize> {
         let is_absolute = path.starts_with('/');
         let parent = if is_absolute { ROOT_INDEX } else { curr_dir };
