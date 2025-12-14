@@ -18,9 +18,9 @@ impl Kernel {
 
         let path = Path::new(path);
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.find_node(parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir)?;
 
-        tx.create_file(parent, name, FileType::File)?;
+        tx.create_file(parent, &name, FileType::File)?;
         tx.commit();
         Ok(())
     }
@@ -31,7 +31,7 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
         tx.commit();
 
         let fd = FileDescription::new(node_index);
@@ -106,13 +106,13 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let old_path = Path::new(old_path);
-        let node_index = tx.find_node(old_path, self.curr_dir)?;
+        let node_index = tx.path_node(&old_path, self.curr_dir)?;
 
         let new_path = Path::new(new_path);
         let (parent, name) = new_path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.find_node(parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir)?;
 
-        tx.link_file(parent, node_index, name)?;
+        tx.link_file(parent, node_index, &name)?;
         tx.commit();
         Ok(())
     }
@@ -125,17 +125,17 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
 
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.find_node(parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir)?;
 
         let is_opened = self
             .open_files
             .values()
             .any(|desc| desc.node_index() == node_index);
 
-        tx.unlink_file(parent, name, !is_opened)?;
+        tx.unlink_file(parent, &name, !is_opened)?;
         tx.commit();
         Ok(())
     }
@@ -146,7 +146,7 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
 
         tx.truncate_file(node_index, size)?;
         tx.commit();
@@ -159,7 +159,7 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
         let node = tx.read_node(node_index)?;
         tx.commit();
         Ok(FileStats::new(node_index, node))
@@ -172,9 +172,9 @@ impl Kernel {
 
         let path = Path::new(path);
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.find_node(parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir)?;
 
-        tx.create_directory(parent, name)?;
+        tx.create_directory(parent, &name)?;
         tx.commit();
         Ok(())
     }
@@ -189,9 +189,9 @@ impl Kernel {
         if name == "." || name == ".." {
             return Err(Error::NotPermitted);
         }
-        let parent = tx.find_node(parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir)?;
 
-        tx.remove_directory(parent, name)?;
+        tx.remove_directory(parent, &name)?;
         tx.commit();
         Ok(())
     }
@@ -202,7 +202,7 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
         let node = tx.read_node(node_index)?;
         if node.filetype() != FileType::Dir {
             return Err(Error::NotDir);
@@ -219,7 +219,7 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.find_node(path, self.curr_dir)?;
+        let node_index = tx.path_node(&path, self.curr_dir)?;
         let dir = tx.read_directory(node_index)?;
         tx.commit();
 

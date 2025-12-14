@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{array, collections::BTreeMap};
 
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
@@ -12,7 +12,7 @@ use crate::{
         alloc_map::{self, AllocMap},
         directory::{self, Dir, DirEntry, DirEntryName},
         node::{self, FileType, NODE_SIZE, NODES_PER_BLOCK, Node},
-        path::Path,
+        path::{self, Path},
     },
 };
 
@@ -383,6 +383,19 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
+    /// Creates a symlink inside `parent_index` directory, containing `target`.
+    /// Returns the node index of the symlink.
+    pub fn create_symlink(
+        &mut self,
+        parent_index: usize,
+        name: &str,
+        target: Path,
+    ) -> Result<usize> {
+        let node_index = self.create_file(parent_index, name, FileType::Symlink)?;
+        self.write_file_at(node_index, 0, target.as_bytes())?;
+        Ok(node_index)
+    }
+
     /// Removes the node, deallocating its physical blocks.
     pub fn remove_node(&mut self, node_index: usize) -> Result<()> {
         let node = self.read_node(node_index)?;
@@ -402,33 +415,43 @@ impl<'a> Transaction<'a> {
         Ok(())
     }
 
-    /// Returns the node index to which `symlink` points to.
-    pub fn resolve_symlink(&self, symlink: usize, parent: usize) -> Result<usize> {
-        todo!()
+    /// Returns the path contained inside `symlink_index`.
+    pub fn read_symlink(&self, symlink_index: usize) -> Result<Path> {
+        let node = self.read_node(symlink_index)?;
+        if node.filetype() != FileType::Symlink {
+            return Err(Error::NotSymlink);
+        }
+        let mut buf = vec![0u8; node.size];
+        self.read_file_at(symlink_index, 0, &mut buf)?;
+        Ok(Path::try_from_bytes_owned(&buf)?)
     }
 
-    /// Finds the node at `path`, using `curr_dir` as parent if `path` is relative.
-    /// If `path` is empty, returns `curr_dir`.
-    pub fn find_node(&self, path: Path, curr_dir: usize) -> Result<usize> {
-        let mut curr_node = curr_dir;
+    /// Finds the entry named `name` inside `parent_index`.
+    pub fn find_entry(&self, parent_index: usize, name: &str) -> Result<DirEntry> {
+        let name = DirEntryName::try_from(name)?;
+        let dir = self.read_directory(parent_index)?;
+        dir.get_entry(name).ok_or(Error::NodeNotFound).copied()
+    }
+
+    /// Finds the node at `path`, using `curr_node` as the start if `path` is relative.
+    pub fn path_node(&self, path: &Path, mut curr_node: usize) -> Result<usize> {
         for part in path.as_parts() {
-            match part {
+            match part.as_ref() {
                 "/" => {
                     curr_node = ROOT_INDEX;
                     continue;
                 }
-                "." => continue,
+                "." => {
+                    continue;
+                }
                 _ => (),
             }
-
-            let dir = self.read_directory(curr_node)?;
-            let name = DirEntryName::try_from(part)?;
-            let entry = dir.get_entry(name).ok_or(Error::NodeNotFound)?;
-
-            let filetype = entry.filetype();
-            curr_node = match filetype {
-                FileType::Symlink => self.resolve_symlink(entry.node_index(), curr_node)?,
-                _ => entry.node_index(),
+            let entry = self.find_entry(curr_node, part.as_ref())?;
+            curr_node = if entry.filetype() == FileType::Symlink {
+                let target = self.read_symlink(entry.node_index())?;
+                self.path_node(&target, curr_node)?
+            } else {
+                entry.node_index()
             }
         }
         Ok(curr_node)
@@ -491,6 +514,7 @@ pub enum Error {
     Alloc(alloc_map::Error),
     Dir(directory::Error),
     Node(node::Error),
+    Path(path::Error),
     NodeNotFound,
     NotFile,
     NotDir,
@@ -498,10 +522,18 @@ pub enum Error {
     CorruptedDir,
     DirNotEmpty,
     FileExists,
+    NotSymlink,
+    TooManyHops,
 }
 
 impl From<directory::Error> for Error {
     fn from(value: directory::Error) -> Self {
         Self::Dir(value)
+    }
+}
+
+impl From<path::Error> for Error {
+    fn from(value: path::Error) -> Self {
+        Self::Path(value)
     }
 }
