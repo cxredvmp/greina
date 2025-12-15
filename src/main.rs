@@ -164,7 +164,7 @@ fn main() {
                             println!("Size: {}", stats.size);
                             println!("Links: {}", stats.link_count);
                             println!("Blocks: {}", stats.block_count);
-                            println!("Node index: {}", stats.node_index);
+                            println!("Node id: {}", stats.node_id);
                         }
                         Err(e) => println!("Error: {:?}", e),
                     }

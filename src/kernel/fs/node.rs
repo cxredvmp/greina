@@ -11,6 +11,36 @@ pub const NODES_PER_BLOCK: usize = BLOCK_SIZE / NODE_SIZE;
 /// How many extents a [Node] can have.
 const EXTENTS_PER_NODE: usize = 15;
 
+/// A pointer to a node.
+#[repr(C)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(FromBytes, IntoBytes, Immutable)]
+pub struct NodePtr {
+    id: usize,
+}
+
+impl NodePtr {
+    /// Constructs a pointer to the rood node.
+    pub fn root() -> Self {
+        Self { id: 1 }
+    }
+
+    /// Constructs a pointer from a node id.
+    pub fn new(id: usize) -> Self {
+        Self { id }
+    }
+
+    /// Returns the id of the node.
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Checks if the pointer doesn't point to any node.
+    pub fn is_null(&self) -> bool {
+        self.id == 0
+    }
+}
+
 /// Represents a file system object.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
@@ -47,9 +77,9 @@ impl Node {
         &mut self.extents
     }
 
-    /// Resolves the logical block index into a physical block index.
-    pub fn get_physical_block(&self, logic_block: usize) -> Option<usize> {
-        let mut offset = logic_block;
+    /// Resolves the logical block id into a physical block id.
+    pub fn get_block_id(&self, logic_id: usize) -> Option<usize> {
+        let mut offset = logic_id;
         for extent in self.extents.iter().take_while(|e| !e.is_null()) {
             let extent_len = extent.len();
             if extent_len > offset {
@@ -64,15 +94,15 @@ impl Node {
         None
     }
 
-    /// Resolves the byte offset into a physical block index.
-    pub fn get_physical_block_from_offset(&self, byte_offset: usize) -> Option<usize> {
-        let logic_block = Self::get_logical_block_from_offset(byte_offset);
-        self.get_physical_block(logic_block)
+    /// Resolves the byte offset into a physical block id.
+    pub fn get_block_id_from_offset(&self, offset: usize) -> Option<usize> {
+        let logic_id = Self::get_logic_id_from_offset(offset);
+        self.get_block_id(logic_id)
     }
 
-    /// Converts a byte offset into a logical block index
-    pub const fn get_logical_block_from_offset(byte_offset: usize) -> usize {
-        byte_offset / BLOCK_SIZE
+    /// Converts a byte offset into a logical block id
+    pub const fn get_logic_id_from_offset(offset: usize) -> usize {
+        offset / BLOCK_SIZE
     }
 
     /// Returns the number of physical blocks that belong to the node.
@@ -85,9 +115,9 @@ impl Node {
     }
 
     /// Maps the logical block to the physical block.
-    pub fn map_block(&mut self, logic_block: usize, phys_block: usize) -> Result<()> {
-        assert!(phys_block != 0);
-        let mut offset = logic_block;
+    pub fn map_block(&mut self, logic_id: usize, block_id: usize) -> Result<()> {
+        assert!(block_id != 0);
+        let mut offset = logic_id;
         for curr in 0..self.extents.len() {
             if self.extents[curr].is_null() {
                 // All allocated extents were passed or there was none
@@ -96,7 +126,7 @@ impl Node {
                     let prev = curr - 1;
                     let is_hole = self.extents[prev].is_hole();
                     let logic_contiguous = offset == 0;
-                    let phys_contiguous = self.extents[prev].end == phys_block;
+                    let phys_contiguous = self.extents[prev].end == block_id;
                     let contiguous = logic_contiguous && phys_contiguous;
                     if !is_hole && contiguous {
                         // Can merge with the previous extent
@@ -105,8 +135,8 @@ impl Node {
                     }
                 }
                 if offset == 0 {
-                    self.extents[curr].start = phys_block;
-                    self.extents[curr].end = phys_block + 1;
+                    self.extents[curr].start = block_id;
+                    self.extents[curr].end = block_id + 1;
                 } else {
                     let next = curr + 1;
                     if next >= self.extents.len() {
@@ -114,8 +144,8 @@ impl Node {
                     }
                     // Make the current extent a hole and map the next one
                     self.extents[curr].end = offset;
-                    self.extents[next].start = phys_block;
-                    self.extents[next].end = phys_block + 1;
+                    self.extents[next].start = block_id;
+                    self.extents[next].end = block_id + 1;
                 }
                 return Ok(());
             }
@@ -131,8 +161,8 @@ impl Node {
                 // Split the hole into three extents:
                 let mut exts = [Extent::default(); 3];
                 exts[0].end = offset; // Left hole
-                exts[1].start = phys_block;
-                exts[1].end = phys_block + 1;
+                exts[1].start = block_id;
+                exts[1].end = block_id + 1;
                 exts[2].end = blocks_in_curr - offset - 1; // Right hole
                 // Remove empty hole, if there is one
                 // (i.e. the first/last block of the hole is mapped)
@@ -223,9 +253,9 @@ impl Extent {
         self.end = 0;
     }
 
-    /// Shrinks the extent to specified length.
-    pub fn shrink(&mut self, length: usize) {
-        self.end = length;
+    /// Shrinks the extent to `len`.
+    pub fn shrink(&mut self, len: usize) {
+        self.end = len;
     }
 
     /// Returns the number of blocks in this extent.

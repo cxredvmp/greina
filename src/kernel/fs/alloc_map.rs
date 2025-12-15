@@ -15,7 +15,7 @@ impl AllocMap {
 
     // NOTE: Explore using the Next-fit algorithm
     /// Tries to find a contiguous span of free objects of `count` length, using the First-fit algorithm.
-    /// On success, returns a (start, end) tuple, representing an exclusive range of indices.
+    /// On success, returns a (start, end) tuple, representing an exclusive range of ids.
     fn find_free(&self, count: usize) -> Option<(usize, usize)> {
         if count == 0 {
             return None;
@@ -34,7 +34,7 @@ impl AllocMap {
     }
 
     /// Tries to allocate a contiguous span of objects of `count` length.
-    /// On success, returns a (start, end) tuple, representing an exclusive range of indices.
+    /// On success, returns a (start, end) tuple, representing an exclusive range of ids.
     pub fn allocate(&mut self, count: usize) -> Result<(usize, usize)> {
         let span = self.find_free(count).ok_or(Error::OutOfSpace)?;
         for flag in &mut self.flags[span.0..span.1] {
@@ -43,9 +43,9 @@ impl AllocMap {
         Ok(span)
     }
 
-    /// Tries to allocate the object at given index.
-    pub fn allocate_at(&mut self, index: usize) -> Result<()> {
-        let flag = self.flags.get_mut(index).ok_or(Error::IndexOutOfBounds)?;
+    /// Tries to allocate the object at `id`.
+    pub fn allocate_at(&mut self, id: usize) -> Result<()> {
+        let flag = self.flags.get_mut(id).ok_or(Error::IdOutOfBounds)?;
         if *flag == AllocFlag::Used {
             return Err(Error::ObjectOccupied);
         }
@@ -53,17 +53,17 @@ impl AllocMap {
         Ok(())
     }
 
-    /// Tries to allocate the specified span of objects.
+    /// Tries to allocate a span of objects.
     ///
     /// # Panics
     /// Panics if:
     /// - `span` is not a valid span
-    pub fn allocate_span(&mut self, span: (usize, usize)) -> Result<()> {
-        assert!(span.0 < span.1);
+    pub fn allocate_span(&mut self, id_span: (usize, usize)) -> Result<()> {
+        assert!(id_span.0 < id_span.1);
         let span = self
             .flags
-            .get_mut(span.0..span.1)
-            .ok_or(Error::IndexOutOfBounds)?;
+            .get_mut(id_span.0..id_span.1)
+            .ok_or(Error::IdOutOfBounds)?;
         if span.contains(&AllocFlag::Used) {
             return Err(Error::ObjectOccupied);
         }
@@ -71,17 +71,17 @@ impl AllocMap {
         Ok(())
     }
 
-    /// Marks the specified span of objects as free.
+    /// Marks the span of objects as free.
     ///
     /// # Panics
     /// Panics if:
     /// - `span` is not a valid span
-    pub fn free(&mut self, span: (usize, usize)) -> Result<()> {
-        assert!(span.0 < span.1);
+    pub fn free(&mut self, id_span: (usize, usize)) -> Result<()> {
+        assert!(id_span.0 < id_span.1);
         let span = self
             .flags
-            .get_mut(span.0..span.1)
-            .ok_or(Error::IndexOutOfBounds)?;
+            .get_mut(id_span.0..id_span.1)
+            .ok_or(Error::IdOutOfBounds)?;
         span.fill(AllocFlag::Free);
         Ok(())
     }
@@ -113,7 +113,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    IndexOutOfBounds,
+    IdOutOfBounds,
     ObjectOccupied,
     OutOfSpace,
 }

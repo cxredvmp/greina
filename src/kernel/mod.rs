@@ -2,7 +2,7 @@ use crate::{
     hardware::storage::Storage,
     kernel::{
         file::OpenFileTable,
-        fs::{Filesystem, ROOT_INDEX},
+        fs::{Filesystem, node::NodePtr},
     },
 };
 
@@ -15,7 +15,7 @@ pub struct Kernel {
     storage: Storage,
     fs: Option<Filesystem>,
     open_files: OpenFileTable,
-    curr_dir: usize,
+    curr_dir_ptr: NodePtr,
 }
 
 impl Kernel {
@@ -25,7 +25,7 @@ impl Kernel {
             storage,
             fs: None,
             open_files: OpenFileTable::new(),
-            curr_dir: ROOT_INDEX,
+            curr_dir_ptr: NodePtr::root(),
         }
     }
 }

@@ -18,7 +18,7 @@ impl Kernel {
 
         let path = Path::new(path);
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.path_node(&parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir_ptr)?;
 
         tx.create_file(parent, &name, FileType::File)?;
         tx.commit();
@@ -31,10 +31,10 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
         tx.commit();
 
-        let fd = FileDescription::new(node_index);
+        let fd = FileDescription::new(node_ptr);
         Ok(self.open_file(fd))
     }
 
@@ -48,12 +48,12 @@ impl Kernel {
         let is_opened = self
             .open_files
             .values()
-            .any(|d| d.node_index() == desc.node_index());
+            .any(|d| d.node_ptr() == desc.node_ptr());
         if !is_opened {
             let mut tx = Transaction::new(fs, &mut self.storage);
-            let node = tx.read_node(desc.node_index())?;
+            let node = tx.read_node(desc.node_ptr())?;
             if node.link_count == 0 {
-                tx.remove_node(desc.node_index())?;
+                tx.remove_node(desc.node_ptr())?;
             };
             tx.commit();
         }
@@ -79,7 +79,7 @@ impl Kernel {
             .get_mut(&fd)
             .ok_or(Error::InvalidFileDescriptor)?;
         let tx = Transaction::new(fs, &mut self.storage);
-        let bytes_read = tx.read_file_at(desc.node_index(), desc.offset, buf)?;
+        let bytes_read = tx.read_file_at(desc.node_ptr(), desc.offset, buf)?;
         tx.commit();
         desc.offset += bytes_read;
         Ok(bytes_read)
@@ -94,7 +94,7 @@ impl Kernel {
             .get_mut(&fd)
             .ok_or(Error::InvalidFileDescriptor)?;
         let mut tx = Transaction::new(fs, &mut self.storage);
-        let bytes_written = tx.write_file_at(desc.node_index(), desc.offset, buf)?;
+        let bytes_written = tx.write_file_at(desc.node_ptr(), desc.offset, buf)?;
         tx.commit();
         desc.offset += bytes_written;
         Ok(bytes_written)
@@ -106,13 +106,13 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let old_path = Path::new(old_path);
-        let node_index = tx.path_node(&old_path, self.curr_dir)?;
+        let node_ptr = tx.path_node(&old_path, self.curr_dir_ptr)?;
 
         let new_path = Path::new(new_path);
         let (parent, name) = new_path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.path_node(&parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir_ptr)?;
 
-        tx.link_file(parent, node_index, &name)?;
+        tx.link_file(parent, node_ptr, &name)?;
         tx.commit();
         Ok(())
     }
@@ -125,15 +125,15 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
 
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.path_node(&parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir_ptr)?;
 
         let is_opened = self
             .open_files
             .values()
-            .any(|desc| desc.node_index() == node_index);
+            .any(|desc| desc.node_ptr() == node_ptr);
 
         tx.unlink_file(parent, &name, !is_opened)?;
         tx.commit();
@@ -146,9 +146,9 @@ impl Kernel {
         let mut tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
 
-        tx.truncate_file(node_index, size)?;
+        tx.truncate_file(node_ptr, size)?;
         tx.commit();
         Ok(())
     }
@@ -159,10 +159,10 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
-        let node = tx.read_node(node_index)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
+        let node = tx.read_node(node_ptr)?;
         tx.commit();
-        Ok(FileStats::new(node_index, node))
+        Ok(FileStats::new(node_ptr, node))
     }
 
     /// Creates a directory at `path`.
@@ -172,7 +172,7 @@ impl Kernel {
 
         let path = Path::new(path);
         let (parent, name) = path.split_last().ok_or(Error::NotPermitted)?;
-        let parent = tx.path_node(&parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir_ptr)?;
 
         tx.create_directory(parent, &name)?;
         tx.commit();
@@ -189,7 +189,7 @@ impl Kernel {
         if name == "." || name == ".." {
             return Err(Error::NotPermitted);
         }
-        let parent = tx.path_node(&parent, self.curr_dir)?;
+        let parent = tx.path_node(&parent, self.curr_dir_ptr)?;
 
         tx.remove_directory(parent, &name)?;
         tx.commit();
@@ -202,14 +202,14 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
-        let node = tx.read_node(node_index)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
+        let node = tx.read_node(node_ptr)?;
         if node.filetype() != FileType::Dir {
             return Err(Error::NotDir);
         }
         tx.commit();
 
-        self.curr_dir = node_index;
+        self.curr_dir_ptr = node_ptr;
         Ok(())
     }
 
@@ -219,8 +219,8 @@ impl Kernel {
         let tx = Transaction::new(fs, &mut self.storage);
 
         let path = Path::new(path);
-        let node_index = tx.path_node(&path, self.curr_dir)?;
-        let dir = tx.read_directory(node_index)?;
+        let node_ptr = tx.path_node(&path, self.curr_dir_ptr)?;
+        let dir = tx.read_directory(node_ptr)?;
         tx.commit();
 
         dir.as_slice()
@@ -228,7 +228,7 @@ impl Kernel {
             .filter(|e| !e.is_null())
             .map(|e| {
                 let name = e.name().map_err(transaction::Error::from)?.to_string();
-                Ok((name, e.node_index()))
+                Ok((name, e.node_ptr().id()))
             })
             .collect()
     }

@@ -5,7 +5,7 @@ use crate::{
     kernel::fs::{
         alloc_map::{AllocFlag, AllocMap},
         directory::Dir,
-        node::FileType,
+        node::{FileType, NodePtr},
         superblock::Superblock,
         transaction::Transaction,
     },
@@ -17,9 +17,6 @@ pub mod node;
 pub mod path;
 pub mod superblock;
 pub mod transaction;
-
-/// Root directory's node index.
-pub const ROOT_INDEX: usize = 1;
 
 /// An in-memory view of the filesystem.
 pub struct Filesystem {
@@ -43,13 +40,13 @@ impl Filesystem {
 
         // Allocate metadata regions
         block_map
-            .allocate_span((0, superblock.data_offset))
-            .expect("'0'..'superblock.data_offset' blocks must not be allocated");
+            .allocate_span((0, superblock.data_start))
+            .expect("'0..superblock.data_start' blocks must not be allocated");
 
         // Allocate the null node
         node_map
             .allocate_at(0)
-            .expect("'0'th node must not be allocated");
+            .expect("Null node must not be allocated");
 
         // Create filesystem
         let mut fs = Filesystem {
@@ -62,15 +59,15 @@ impl Filesystem {
             // Write superblock
             let superblock = Block::from(&fs.superblock);
             let mut tx = Transaction::new(&mut fs, storage);
-            tx.write_block(superblock::SUPER_INDEX, &superblock);
+            tx.write_block(superblock::SUPER_ID, &superblock);
 
             // Initialize the root directory
-            let (_, root_index) = tx
+            let (_, root_id) = tx
                 .create_node(FileType::Dir)
                 .expect("Must be able to create the root node");
-            assert!(root_index == ROOT_INDEX);
-            let root = Dir::new(root_index, root_index);
-            tx.write_directory(root_index, &root)
+            assert!(root_id == NodePtr::root());
+            let root = Dir::new(root_id, root_id);
+            tx.write_directory(root_id, &root)
                 .expect("Must be able to write the root directory");
 
             tx.commit();
@@ -100,16 +97,16 @@ impl Filesystem {
         // Read the block allocation map
         let block_map = Self::read_map(
             storage,
-            superblock.block_map_offset,
-            superblock.node_map_offset,
+            superblock.block_map_start,
+            superblock.node_map_start,
             superblock.block_count,
         );
 
         // Read the node allocation map
         let node_map = Self::read_map(
             storage,
-            superblock.node_map_offset,
-            superblock.node_table_offset,
+            superblock.node_map_start,
+            superblock.node_table_start,
             superblock.node_count,
         );
 
@@ -121,9 +118,9 @@ impl Filesystem {
     }
 
     fn read_map(storage: &Storage, map_start: usize, map_end: usize, count: usize) -> AllocMap {
-        let block_indices: Vec<usize> = (map_start..map_end).collect();
+        let block_ids: Vec<usize> = (map_start..map_end).collect();
         let blocks = storage
-            .read_blocks(&block_indices)
+            .read_blocks(&block_ids)
             .expect("Must be able to read the allocation map");
         let bytes = blocks.as_bytes();
         let flags = <[AllocFlag]>::try_ref_from_bytes(bytes)

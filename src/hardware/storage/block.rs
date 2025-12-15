@@ -1,6 +1,6 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-/// Block size specified in bytes.
+/// Block size in bytes.
 pub const BLOCK_SIZE: usize = 4096;
 
 /// A fixed-sized byte sequence.

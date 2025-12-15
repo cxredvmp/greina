@@ -1,4 +1,4 @@
-use std::{array, collections::BTreeMap};
+use std::collections::BTreeMap;
 
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
@@ -8,10 +8,10 @@ use crate::{
         block::{BLOCK_SIZE, Block},
     },
     kernel::fs::{
-        Filesystem, ROOT_INDEX,
+        Filesystem,
         alloc_map::{self, AllocMap},
         directory::{self, Dir, DirEntry, DirEntryName},
-        node::{self, FileType, NODE_SIZE, NODES_PER_BLOCK, Node},
+        node::{self, FileType, NODE_SIZE, NODES_PER_BLOCK, Node, NodePtr},
         path::{self, Path},
     },
 };
@@ -39,10 +39,10 @@ impl<'a> Transaction<'a> {
     /// Commits the transaction to persistent storage, consuming the transaction.
     pub fn commit(mut self) {
         self.sync_maps();
-        for (&block_index, block) in self.changes.iter() {
+        for (&block_id, block) in self.changes.iter() {
             self.storage
-                .write_block(block_index, block)
-                .expect("'block_index' must be a valid block index")
+                .write_block(block_id, block)
+                .expect("'block_id' must be a valid block id")
         }
     }
 
@@ -55,73 +55,69 @@ impl<'a> Transaction<'a> {
             storage,
             changes,
             &fs.block_map,
-            fs.superblock.block_map_offset,
+            fs.superblock.block_map_start,
         );
-        Self::_sync_map(
-            storage,
-            changes,
-            &fs.node_map,
-            fs.superblock.node_map_offset,
-        );
+        Self::_sync_map(storage, changes, &fs.node_map, fs.superblock.node_map_start);
     }
 
     // Internal implementation of 'sync_maps' for a single map.
     // Separated to split borrows.
-    fn _sync_map(storage: &Storage, changes: &mut Changes, map: &AllocMap, map_offset: usize) {
+    fn _sync_map(storage: &Storage, changes: &mut Changes, map: &AllocMap, map_start: usize) {
         let bytes = map.as_slice().as_bytes();
         for (i, chunk) in bytes.chunks(BLOCK_SIZE).enumerate() {
             let block_mem = Block::read_from_bytes(chunk).unwrap_or_else(|_| Block::new(chunk));
             // Check if in-memory and stored blocks differ
-            let block_index = map_offset + i;
-            let block_stored = Self::_read_block(storage, changes, block_index)
+            let block_id = map_start + i;
+            let block_stored = Self::_read_block(storage, changes, block_id)
                 .expect("Must be able to read the allocation map");
             if block_mem.data != block_stored.data {
-                Self::_write_block(changes, map_offset + i, &block_mem);
+                Self::_write_block(changes, map_start + i, &block_mem);
             }
         }
     }
 
     /// Reads the node from the node table.
-    pub fn read_node(&self, node_index: usize) -> Result<Node> {
-        let block_index = self
-            .get_node_block_index(node_index)
-            .ok_or(Error::NodeIndexOutOfBounds)?;
-        let block = self.read_block(block_index)?;
-        let byte_offset = self
-            .get_node_byte_offset(node_index)
-            .ok_or(Error::NodeIndexOutOfBounds)?;
+    pub fn read_node(&self, node_ptr: NodePtr) -> Result<Node> {
+        let block_id = self
+            .get_node_block_id(node_ptr)
+            .ok_or(Error::NodePtrOutOfBounds)?;
+        let block = self.read_block(block_id)?;
+        let offset = self
+            .get_node_offset(node_ptr)
+            .ok_or(Error::NodePtrOutOfBounds)?;
         Ok(
-            Node::try_read_from_bytes(&block.data[byte_offset..(byte_offset + NODE_SIZE)])
+            Node::try_read_from_bytes(&block.data[offset..(offset + NODE_SIZE)])
                 .expect("'bytes' must be a valid 'Node'"),
         )
     }
 
     // Queues a write of the node to the node table.
-    pub fn write_node(&mut self, node_index: usize, node: Node) -> Result<()> {
-        let block_index = self
-            .get_node_block_index(node_index)
-            .ok_or(Error::NodeIndexOutOfBounds)?;
-        let mut block = self.read_block(block_index)?;
-        let byte_offset = self
-            .get_node_byte_offset(node_index)
-            .ok_or(Error::NodeIndexOutOfBounds)?;
-        block.data[byte_offset..(byte_offset + NODE_SIZE)].copy_from_slice(node.as_bytes());
-        self.write_block(block_index, &block);
+    pub fn write_node(&mut self, node_ptr: NodePtr, node: Node) -> Result<()> {
+        let block_id = self
+            .get_node_block_id(node_ptr)
+            .ok_or(Error::NodePtrOutOfBounds)?;
+        let mut block = self.read_block(block_id)?;
+        let offset = self
+            .get_node_offset(node_ptr)
+            .ok_or(Error::NodePtrOutOfBounds)?;
+        block.data[offset..(offset + NODE_SIZE)].copy_from_slice(node.as_bytes());
+        self.write_block(block_id, &block);
         Ok(())
     }
 
-    /// Allocates a [Node], returning it and its index.
-    pub fn create_node(&mut self, filetype: FileType) -> Result<(Node, usize)> {
+    /// Allocates a [Node], returning it and its pointer.
+    pub fn create_node(&mut self, filetype: FileType) -> Result<(Node, NodePtr)> {
         let node = Node::new(filetype);
-        let (node_index, _) = self.fs.node_map.allocate(1).map_err(Error::Alloc)?;
-        self.write_node(node_index, node)?;
-        Ok((node, node_index))
+        let (id, _) = self.fs.node_map.allocate(1).map_err(Error::Alloc)?;
+        let node_ptr = NodePtr::new(id);
+        self.write_node(node_ptr, node)?;
+        Ok((node, node_ptr))
     }
 
     /// Reads a number of bytes from the file starting from a given offset into the buffer.
     /// Returns the number of bytes read.
-    pub fn read_file_at(&self, node_index: usize, offset: usize, buf: &mut [u8]) -> Result<usize> {
-        let node = self.read_node(node_index)?;
+    pub fn read_file_at(&self, node_ptr: NodePtr, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        let node = self.read_node(node_ptr)?;
 
         if offset >= node.size {
             return Ok(0);
@@ -135,9 +131,9 @@ impl<'a> Transaction<'a> {
             let curr_pos = offset + bytes_read;
             let offset_in_block = curr_pos % BLOCK_SIZE; // First read might be unaligned
             let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_read - bytes_read);
-            match node.get_physical_block_from_offset(curr_pos) {
-                Some(block_index) => {
-                    let data = self.read_block(block_index)?.data;
+            match node.get_block_id_from_offset(curr_pos) {
+                Some(block_id) => {
+                    let data = self.read_block(block_id)?.data;
                     buf[bytes_read..(bytes_read + chunk_size)]
                         .copy_from_slice(&data[offset_in_block..(offset_in_block + chunk_size)]);
                 }
@@ -157,11 +153,11 @@ impl<'a> Transaction<'a> {
     /// Returns the number of byttes written.
     pub fn write_file_at(
         &mut self,
-        node_index: usize,
+        node_ptr: NodePtr,
         offset: usize,
         data: &[u8],
     ) -> Result<usize> {
-        let mut node = self.read_node(node_index)?;
+        let mut node = self.read_node(node_ptr)?;
 
         if offset > node.size {
             return Ok(0);
@@ -174,16 +170,15 @@ impl<'a> Transaction<'a> {
         while bytes_written != bytes_to_write {
             let curr_pos = offset + bytes_written;
             let offset_in_block = curr_pos % BLOCK_SIZE; // First read might be unaligned
-            let logic_block = Node::get_logical_block_from_offset(curr_pos);
-            let (phys_block, has_alloc) = match node.get_physical_block(logic_block) {
-                Some(index) => (index, false),
+            let logic_id = Node::get_logic_id_from_offset(curr_pos);
+            let (block_id, has_alloc) = match node.get_block_id(logic_id) {
+                Some(block_id) => (block_id, false),
                 None => {
-                    // Allocate a physical block
-                    let (phys_block, _) = self.fs.block_map.allocate(1).map_err(Error::Alloc)?;
-                    node.map_block(logic_block, phys_block)
-                        .map_err(Error::Node)?;
+                    // Allocate a block
+                    let (block_id, _) = self.fs.block_map.allocate(1).map_err(Error::Alloc)?;
+                    node.map_block(logic_id, block_id).map_err(Error::Node)?;
                     node_updated = true;
-                    (phys_block, true)
+                    (block_id, true)
                 }
             };
             let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
@@ -191,11 +186,11 @@ impl<'a> Transaction<'a> {
             let mut block = if has_alloc {
                 Block::default()
             } else {
-                self.read_block(phys_block)?
+                self.read_block(block_id)?
             };
             block.data[offset_in_block..(offset_in_block + chunk_size)]
                 .copy_from_slice(&data[bytes_written..(bytes_written + chunk_size)]);
-            self.write_block(phys_block, &block);
+            self.write_block(block_id, &block);
             bytes_written += chunk_size;
         }
 
@@ -206,15 +201,15 @@ impl<'a> Transaction<'a> {
         }
 
         if node_updated {
-            self.write_node(node_index, node)?;
+            self.write_node(node_ptr, node)?;
         }
 
         Ok(bytes_written)
     }
 
-    /// Truncates the file to specified size.
-    pub fn truncate_file(&mut self, node_index: usize, size: usize) -> Result<()> {
-        let mut node = self.read_node(node_index)?;
+    /// Truncates the size of the file to `size`.
+    pub fn truncate_file(&mut self, node_ptr: NodePtr, size: usize) -> Result<()> {
+        let mut node = self.read_node(node_ptr)?;
 
         if node.filetype() != FileType::File {
             return Err(Error::NotFile);
@@ -222,7 +217,7 @@ impl<'a> Transaction<'a> {
 
         if size >= node.size {
             node.size = size;
-            self.write_node(node_index, node)?;
+            self.write_node(node_ptr, node)?;
             return Ok(());
         }
 
@@ -254,66 +249,68 @@ impl<'a> Transaction<'a> {
         }
 
         node.size = size;
-        self.write_node(node_index, node)?;
+        self.write_node(node_ptr, node)?;
         Ok(())
     }
 
-    /// Creates a file with the given name and type inside the specified parent directory, returning its node index.
+    /// Creates a file with given name and type inside `parent_ptr`.
+    /// Returns the file's node pointer.
     pub fn create_file(
         &mut self,
-        parent_index: usize,
+        parent_ptr: NodePtr,
         name: &str,
         filetype: FileType,
-    ) -> Result<usize> {
+    ) -> Result<NodePtr> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut parent = self.read_directory(parent_index)?;
+        let mut parent = self.read_directory(parent_ptr)?;
         if parent.get_entry(name).is_some() {
             return Err(Error::FileExists);
         }
 
-        let (mut node, node_index) = self.create_node(filetype)?;
+        let (mut node, node_ptr) = self.create_node(filetype)?;
         node.link_count += 1;
 
-        let entry = DirEntry::new(node_index, filetype, name);
+        let entry = DirEntry::new(node_ptr, filetype, name);
         parent.add_entry(entry);
 
-        self.write_directory(parent_index, &parent)?;
-        self.write_node(node_index, node)?;
+        self.write_directory(parent_ptr, &parent)?;
+        self.write_node(node_ptr, node)?;
 
-        Ok(node_index)
+        Ok(node_ptr)
     }
 
     /// Reads the directory.
-    pub fn read_directory(&self, node_index: usize) -> Result<Dir> {
-        let node = self.read_node(node_index)?;
+    pub fn read_directory(&self, node_ptr: NodePtr) -> Result<Dir> {
+        let node = self.read_node(node_ptr)?;
         if node.filetype() != FileType::Dir {
             return Err(Error::NotDir);
         }
         let mut buf = vec![0u8; node.size];
-        self.read_file_at(node_index, 0, &mut buf)?;
+        self.read_file_at(node_ptr, 0, &mut buf)?;
         let entries = <[DirEntry]>::try_ref_from_bytes(&buf).map_err(|_| Error::CorruptedDir)?;
         Ok(Dir::from_slice(entries))
     }
 
     /// Writes the directory.
-    pub fn write_directory(&mut self, node_index: usize, dir: &Dir) -> Result<()> {
+    pub fn write_directory(&mut self, node_ptr: NodePtr, dir: &Dir) -> Result<()> {
         let bytes = dir.as_slice().as_bytes();
-        self.write_file_at(node_index, 0, bytes)?;
+        self.write_file_at(node_ptr, 0, bytes)?;
         Ok(())
     }
 
-    /// Creates a directory with the given name inside the specified parent directory, returning its node index.
-    pub fn create_directory(&mut self, parent_index: usize, name: &str) -> Result<usize> {
-        let node_index = self.create_file(parent_index, name, FileType::Dir)?;
-        let dir = Dir::new(node_index, parent_index);
-        self.write_directory(node_index, &dir)?;
-        Ok(node_index)
+    /// Creates a directory with given name inside `parent_ptr`.
+    /// Returns the directory's node pointer.
+    pub fn create_directory(&mut self, parent_ptr: NodePtr, name: &str) -> Result<NodePtr> {
+        let node_ptr = self.create_file(parent_ptr, name, FileType::Dir)?;
+        let dir = Dir::new(node_ptr, parent_ptr);
+        self.write_directory(node_ptr, &dir)?;
+        Ok(node_ptr)
     }
 
-    /// Removes the empty directory `name` inside the parent directory pointed to by `parent`.
-    pub fn remove_directory(&mut self, parent: usize, name: &str) -> Result<()> {
-        let mut parent_dir = self.read_directory(parent)?;
+    /// Removes the empty directory `name` inside `parent_ptr`.
+    pub fn remove_directory(&mut self, parent_ptr: NodePtr, name: &str) -> Result<()> {
+        let mut parent_dir = self.read_directory(parent_ptr)?;
 
         let name = DirEntryName::try_from(name)?;
         let entry = parent_dir.get_entry(name).ok_or(Error::NodeNotFound)?;
@@ -322,83 +319,83 @@ impl<'a> Transaction<'a> {
             return Err(Error::NotDir);
         }
 
-        let node_index = entry.node_index();
-        let dir = self.read_directory(node_index)?;
+        let node_ptr = entry.node_ptr();
+        let dir = self.read_directory(node_ptr)?;
         if !dir.is_empty() {
             return Err(Error::DirNotEmpty);
         }
 
         parent_dir.remove_entry(name)?;
-        self.write_directory(parent, &parent_dir)?;
+        self.write_directory(parent_ptr, &parent_dir)?;
 
-        self.remove_node(node_index)
+        self.remove_node(node_ptr)
     }
 
     /// Creates a hard link to the file with a given name.
-    pub fn link_file(&mut self, parent_index: usize, node_index: usize, name: &str) -> Result<()> {
+    pub fn link_file(&mut self, parent_ptr: NodePtr, node_ptr: NodePtr, name: &str) -> Result<()> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut dir = self.read_directory(parent_index)?;
+        let mut dir = self.read_directory(parent_ptr)?;
         if dir.get_entry(name).is_some() {
             return Err(Error::FileExists);
         }
 
-        let mut node = self.read_node(node_index)?;
+        let mut node = self.read_node(node_ptr)?;
         if node.filetype() == FileType::Dir {
             return Err(Error::IsDir);
         }
 
-        let entry = DirEntry::new(node_index, node.filetype(), name);
+        let entry = DirEntry::new(node_ptr, node.filetype(), name);
         dir.add_entry(entry);
         node.link_count += 1;
 
-        self.write_node(node_index, node)?;
-        self.write_directory(parent_index, &dir)?;
+        self.write_node(node_ptr, node)?;
+        self.write_directory(parent_ptr, &dir)?;
         Ok(())
     }
 
     /// Removes a hard link to the file with a given name.
     /// If `free` is true, deletes the node if `node.link_count` drops to 0, else it must be deallocated manually.
-    pub fn unlink_file(&mut self, parent_index: usize, name: &str, free: bool) -> Result<()> {
+    pub fn unlink_file(&mut self, parent_ptr: NodePtr, name: &str, free: bool) -> Result<()> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut dir = self.read_directory(parent_index)?;
+        let mut dir = self.read_directory(parent_ptr)?;
         let entry = dir.get_entry(name).ok_or(Error::NodeNotFound)?;
         if entry.filetype() == FileType::Dir {
             return Err(Error::IsDir);
         }
 
-        let node_index = dir.remove_entry(name).map_err(Error::Dir)?;
-        self.write_directory(parent_index, &dir)?;
+        let node_ptr = dir.remove_entry(name).map_err(Error::Dir)?;
+        self.write_directory(parent_ptr, &dir)?;
 
-        let mut node = self.read_node(node_index)?;
+        let mut node = self.read_node(node_ptr)?;
         node.link_count -= 1;
 
         if node.link_count == 0 && free {
-            self.remove_node(node_index)?;
+            self.remove_node(node_ptr)?;
         } else {
-            self.write_node(node_index, node)?;
+            self.write_node(node_ptr, node)?;
         }
 
         Ok(())
     }
 
-    /// Creates a symlink inside `parent_index` directory, containing `target`.
-    /// Returns the node index of the symlink.
+    /// Creates a symlink inside `parent_ptr`, containing `target`.
+    /// Returns the node pointer of the symlink.
     pub fn create_symlink(
         &mut self,
-        parent_index: usize,
+        parent_ptr: NodePtr,
         name: &str,
         target: Path,
-    ) -> Result<usize> {
-        let node_index = self.create_file(parent_index, name, FileType::Symlink)?;
-        self.write_file_at(node_index, 0, target.as_bytes())?;
-        Ok(node_index)
+    ) -> Result<NodePtr> {
+        let node_ptr = self.create_file(parent_ptr, name, FileType::Symlink)?;
+        self.write_file_at(node_ptr, 0, target.as_bytes())?;
+        Ok(node_ptr)
     }
 
     /// Removes the node, deallocating its physical blocks.
-    pub fn remove_node(&mut self, node_index: usize) -> Result<()> {
-        let node = self.read_node(node_index)?;
+    pub fn remove_node(&mut self, node_ptr: NodePtr) -> Result<()> {
+        let node = self.read_node(node_ptr)?;
         let extents = node.get_extents().iter().take_while(|e| !e.is_null());
         for extent in extents {
             self.fs
@@ -406,39 +403,38 @@ impl<'a> Transaction<'a> {
                 .free(extent.span())
                 .map_err(Error::Alloc)?;
         }
-        self.fs
-            .node_map
-            .free((node_index, node_index + 1))
-            .map_err(Error::Alloc)?;
+        let id = node_ptr.id();
+        self.fs.node_map.free((id, id + 1)).map_err(Error::Alloc)?;
         let node = Node::default();
-        self.write_node(node_index, node)?;
+        self.write_node(node_ptr, node)?;
         Ok(())
     }
 
-    /// Returns the path contained inside `symlink_index`.
-    pub fn read_symlink(&self, symlink_index: usize) -> Result<Path> {
-        let node = self.read_node(symlink_index)?;
+    /// Returns the path contained inside `symlink_ptr`.
+    pub fn read_symlink(&self, symlink_ptr: NodePtr) -> Result<Path<'_>> {
+        let node = self.read_node(symlink_ptr)?;
         if node.filetype() != FileType::Symlink {
             return Err(Error::NotSymlink);
         }
         let mut buf = vec![0u8; node.size];
-        self.read_file_at(symlink_index, 0, &mut buf)?;
+        self.read_file_at(symlink_ptr, 0, &mut buf)?;
         Ok(Path::try_from_bytes_owned(&buf)?)
     }
 
-    /// Finds the entry named `name` inside `parent_index`.
-    pub fn find_entry(&self, parent_index: usize, name: &str) -> Result<DirEntry> {
+    /// Finds the entry named `name` inside `parent_ptr`.
+    pub fn find_entry(&self, parent_ptr: NodePtr, name: &str) -> Result<DirEntry> {
         let name = DirEntryName::try_from(name)?;
-        let dir = self.read_directory(parent_index)?;
+        let dir = self.read_directory(parent_ptr)?;
         dir.get_entry(name).ok_or(Error::NodeNotFound).copied()
     }
 
-    /// Finds the node at `path`, using `curr_node` as the start if `path` is relative.
-    pub fn path_node(&self, path: &Path, mut curr_node: usize) -> Result<usize> {
+    /// Finds the node at `path`, using `start_node_ptr` as the start if `path` is relative.
+    pub fn path_node(&self, path: &Path, start_node_ptr: NodePtr) -> Result<NodePtr> {
+        let mut curr_node_ptr = start_node_ptr;
         for part in path.as_parts() {
             match part.as_ref() {
                 "/" => {
-                    curr_node = ROOT_INDEX;
+                    curr_node_ptr = NodePtr::root();
                     continue;
                 }
                 "." => {
@@ -446,58 +442,60 @@ impl<'a> Transaction<'a> {
                 }
                 _ => (),
             }
-            let entry = self.find_entry(curr_node, part.as_ref())?;
-            curr_node = if entry.filetype() == FileType::Symlink {
-                let target = self.read_symlink(entry.node_index())?;
-                self.path_node(&target, curr_node)?
+            let entry = self.find_entry(curr_node_ptr, part.as_ref())?;
+            curr_node_ptr = if entry.filetype() == FileType::Symlink {
+                let target = self.read_symlink(entry.node_ptr())?;
+                self.path_node(&target, curr_node_ptr)?
             } else {
-                entry.node_index()
+                entry.node_ptr()
             }
         }
-        Ok(curr_node)
+        Ok(curr_node_ptr)
     }
 
     // Internal implementation of 'read_block'.
     // Separated to split borrows in some contexts.
-    fn _read_block(storage: &Storage, changes: &Changes, block_index: usize) -> Result<Block> {
+    fn _read_block(storage: &Storage, changes: &Changes, block_id: usize) -> Result<Block> {
         // Check cached changes
-        match changes.get(&block_index) {
+        match changes.get(&block_id) {
             Some(block) => Ok(*block),
             None => storage
-                .read_block(block_index)
-                .map_err(|_| Error::BlockIndexOutOfBounds),
+                .read_block(block_id)
+                .map_err(|_| Error::BlockIdOutOfBounds),
         }
     }
 
     /// Reads the physical block.
-    pub fn read_block(&self, block_index: usize) -> Result<Block> {
-        Self::_read_block(self.storage, &self.changes, block_index)
+    pub fn read_block(&self, block_id: usize) -> Result<Block> {
+        Self::_read_block(self.storage, &self.changes, block_id)
     }
 
     // Internal implementation of 'write_block'.
     // Separated to split borrows in some contexts.
-    fn _write_block(changes: &mut Changes, block_index: usize, block: &Block) {
-        changes.insert(block_index, *block);
+    fn _write_block(changes: &mut Changes, block_id: usize, block: &Block) {
+        changes.insert(block_id, *block);
     }
 
     /// Queues a write of the physical block.
-    pub fn write_block(&mut self, block_index: usize, block: &Block) {
-        Self::_write_block(&mut self.changes, block_index, block);
+    pub fn write_block(&mut self, block_id: usize, block: &Block) {
+        Self::_write_block(&mut self.changes, block_id, block);
     }
 
-    /// Returns the index of the block in which the node resides.
-    fn get_node_block_index(&self, node_index: usize) -> Option<usize> {
-        if node_index < self.fs.superblock.node_count {
-            Some(self.fs.superblock.node_table_offset + (node_index * NODE_SIZE / BLOCK_SIZE))
+    /// Returns the id of the block in which the node resides.
+    fn get_node_block_id(&self, node_ptr: NodePtr) -> Option<usize> {
+        let id = node_ptr.id();
+        if id < self.fs.superblock.node_count {
+            Some(self.fs.superblock.node_table_start + (id * NODE_SIZE / BLOCK_SIZE))
         } else {
             None
         }
     }
 
     /// Returns the byte offset of the node within the block.
-    fn get_node_byte_offset(&self, node_index: usize) -> Option<usize> {
-        if node_index < self.fs.superblock.node_count {
-            Some(node_index % NODES_PER_BLOCK * NODE_SIZE)
+    fn get_node_offset(&self, node_ptr: NodePtr) -> Option<usize> {
+        let id = node_ptr.id();
+        if id < self.fs.superblock.node_count {
+            Some(id % NODES_PER_BLOCK * NODE_SIZE)
         } else {
             None
         }
@@ -508,9 +506,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    BlockIndexOutOfBounds,
-    NodeIndexOutOfBounds,
-    LogicalIndexOutOfBounds,
+    BlockIdOutOfBounds,
+    NodePtrOutOfBounds,
     Alloc(alloc_map::Error),
     Dir(directory::Error),
     Node(node::Error),

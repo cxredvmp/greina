@@ -1,6 +1,6 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, TryFromBytes};
 
-use crate::kernel::fs::node::FileType;
+use crate::kernel::fs::node::{FileType, NodePtr};
 
 /// Tracks entries within a directory.
 pub struct Dir {
@@ -8,22 +8,22 @@ pub struct Dir {
 }
 
 impl Dir {
-    /// Constructs an empty [Dir] with given node index and parent node index.
-    pub fn new(index: usize, parent_index: usize) -> Self {
+    /// Constructs an empty [Dir] with given node pointer and parent node pointer.
+    pub fn new(node_ptr: NodePtr, parent_ptr: NodePtr) -> Self {
         let mut dir = Self {
             entries: Vec::new(),
         };
-        dir.add_entry(DirEntry::itself(index));
-        dir.add_entry(DirEntry::parent(parent_index));
+        dir.add_entry(DirEntry::itself(node_ptr));
+        dir.add_entry(DirEntry::parent(parent_ptr));
         dir
     }
 
-    /// Returns a reference to the entry with a given name.
+    /// Returns a reference to the entry with given name.
     pub fn get_entry(&self, name: DirEntryName) -> Option<&DirEntry> {
         self.entries.iter().find(|e| e.name == name && !e.is_null())
     }
 
-    /// Returns a mutable reference to the entry with a given name.
+    /// Returns a mutable reference to the entry with given name.
     pub fn get_mut_entry(&mut self, name: DirEntryName) -> Option<&mut DirEntry> {
         self.entries
             .iter_mut()
@@ -39,12 +39,12 @@ impl Dir {
         }
     }
 
-    /// Removes the entry from the directory, returning its node index.
-    pub fn remove_entry(&mut self, name: DirEntryName) -> Result<usize> {
+    /// Removes the entry from the directory, returning its node pointer.
+    pub fn remove_entry(&mut self, name: DirEntryName) -> Result<NodePtr> {
         let entry = self.get_mut_entry(name).ok_or(Error::EntryNotFound)?;
-        let node_index = entry.node_index;
-        entry.node_index = 0;
-        Ok(node_index)
+        let node_ptr = entry.node_ptr;
+        entry.node_ptr = NodePtr::default();
+        Ok(node_ptr)
     }
 
     /// Checks if the directory is empty (contains only `.` and `..` entries).
@@ -72,50 +72,50 @@ impl Dir {
 pub struct DirEntry {
     filetype: FileType,
     _pad: [u8; 7],
-    node_index: usize,
+    node_ptr: NodePtr,
     name: DirEntryName,
 }
 
 impl DirEntry {
-    /// Constructs a directory entry with given parameters
-    pub fn new(node_index: usize, filetype: FileType, name: DirEntryName) -> Self {
+    /// Constructs a directory entry with given node pointer, file type and name.
+    pub fn new(node_ptr: NodePtr, filetype: FileType, name: DirEntryName) -> Self {
         Self {
-            node_index,
+            node_ptr,
             _pad: [0u8; 7],
             filetype,
             name,
         }
     }
 
-    /// Constructs a `.` directory entry with a given index.
-    pub fn itself(index: usize) -> Self {
+    /// Constructs a `.` directory entry with given node pointer.
+    pub fn itself(node_ptr: NodePtr) -> Self {
         Self::new(
-            index,
+            node_ptr,
             FileType::Dir,
             DirEntryName::try_from(".").expect("'.' must be a valid directory entry name"),
         )
     }
 
-    /// Constructs a `..` directory entry with a given index.
-    pub fn parent(index: usize) -> Self {
+    /// Constructs a `..` directory entry with given node pointer.
+    pub fn parent(node_ptr: NodePtr) -> Self {
         Self::new(
-            index,
+            node_ptr,
             FileType::Dir,
             DirEntryName::try_from("..").expect("'..' must be a valid directory entry name"),
         )
     }
 
-    /// Checks if the directory entry does not point to any node.
+    /// Checks if the entry contains a null node pointer.
     pub fn is_null(&self) -> bool {
-        self.node_index == 0
+        self.node_ptr.is_null()
     }
 
     pub fn filetype(&self) -> FileType {
         self.filetype
     }
 
-    pub fn node_index(&self) -> usize {
-        self.node_index
+    pub fn node_ptr(&self) -> NodePtr {
+        self.node_ptr
     }
 
     pub fn name(&self) -> Result<&str> {
@@ -124,14 +124,14 @@ impl DirEntry {
 }
 
 /// How long a directory entry name can be.
-const MAX_NAME_LEN: usize = 64;
+const NAME_MAX: usize = 64;
 
 /// Represents the name of a directory entry.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[derive(FromBytes, IntoBytes, Immutable)]
 pub struct DirEntryName {
-    bytes: [u8; MAX_NAME_LEN],
+    bytes: [u8; NAME_MAX],
 }
 
 impl DirEntryName {
@@ -150,10 +150,10 @@ impl TryFrom<&str> for DirEntryName {
 
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         let len = value.len();
-        if len > MAX_NAME_LEN {
+        if len > NAME_MAX {
             return Err(Error::NameTooLong);
         }
-        let mut bytes = [0u8; MAX_NAME_LEN];
+        let mut bytes = [0u8; NAME_MAX];
         bytes[..len].copy_from_slice(value.as_bytes());
         Ok(Self { bytes })
     }
@@ -163,11 +163,7 @@ impl<'a> TryFrom<&'a DirEntryName> for &'a str {
     type Error = Error;
 
     fn try_from(value: &'a DirEntryName) -> std::result::Result<Self, Self::Error> {
-        let len = value
-            .bytes
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(MAX_NAME_LEN);
+        let len = value.bytes.iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
         str::from_utf8(&value.bytes[..len]).map_err(|_| Error::CorruptedName)
     }
 }
