@@ -170,13 +170,14 @@ impl<'a> Transaction<'a> {
         while bytes_written != bytes_to_write {
             let curr_pos = offset + bytes_written;
             let offset_in_block = curr_pos % BLOCK_SIZE; // First read might be unaligned
-            let logic_id = Node::get_logic_id_from_offset(curr_pos);
-            let (block_id, has_alloc) = match node.get_block_id(logic_id) {
+            let block_offset = Node::get_block_offset_from_offset(curr_pos);
+            let (block_id, has_alloc) = match node.get_block_id(block_offset) {
                 Some(block_id) => (block_id, false),
                 None => {
                     // Allocate a block
                     let (block_id, _) = self.fs.block_map.allocate(1).map_err(Error::Alloc)?;
-                    node.map_block(logic_id, block_id).map_err(Error::Node)?;
+                    node.map_block(block_offset, block_id)
+                        .map_err(Error::Node)?;
                     node_updated = true;
                     (block_id, true)
                 }
@@ -393,7 +394,7 @@ impl<'a> Transaction<'a> {
         Ok(node_ptr)
     }
 
-    /// Removes the node, deallocating its physical blocks.
+    /// Removes the node, deallocating its blocks.
     pub fn remove_node(&mut self, node_ptr: NodePtr) -> Result<()> {
         let node = self.read_node(node_ptr)?;
         let extents = node.get_extents().iter().take_while(|e| !e.is_null());
@@ -465,7 +466,7 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Reads the physical block.
+    /// Reads the block.
     pub fn read_block(&self, block_id: usize) -> Result<Block> {
         Self::_read_block(self.storage, &self.changes, block_id)
     }
@@ -476,7 +477,7 @@ impl<'a> Transaction<'a> {
         changes.insert(block_id, *block);
     }
 
-    /// Queues a write of the physical block.
+    /// Queues a write of the block.
     pub fn write_block(&mut self, block_id: usize, block: &Block) {
         Self::_write_block(&mut self.changes, block_id, block);
     }

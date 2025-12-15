@@ -77,35 +77,34 @@ impl Node {
         &mut self.extents
     }
 
-    /// Resolves the logical block id into a physical block id.
-    pub fn get_block_id(&self, logic_id: usize) -> Option<usize> {
-        let mut offset = logic_id;
+    /// Resolves `block offset` within the file into a block id.
+    pub fn get_block_id(&self, mut block_offset: usize) -> Option<usize> {
         for extent in self.extents.iter().take_while(|e| !e.is_null()) {
             let extent_len = extent.len();
-            if extent_len > offset {
+            if extent_len > block_offset {
                 return if extent.is_hole() {
                     None
                 } else {
-                    Some(extent.start + offset)
+                    Some(extent.start + block_offset)
                 };
             }
-            offset -= extent_len;
+            block_offset -= extent_len;
         }
         None
     }
 
-    /// Resolves the byte offset into a physical block id.
+    /// Resolves byte `offset` into a block id.
     pub fn get_block_id_from_offset(&self, offset: usize) -> Option<usize> {
-        let logic_id = Self::get_logic_id_from_offset(offset);
-        self.get_block_id(logic_id)
+        let block_offset = Self::get_block_offset_from_offset(offset);
+        self.get_block_id(block_offset)
     }
 
-    /// Converts a byte offset into a logical block id
-    pub const fn get_logic_id_from_offset(offset: usize) -> usize {
+    /// Converts byte `offset` into a block offset.
+    pub const fn get_block_offset_from_offset(offset: usize) -> usize {
         offset / BLOCK_SIZE
     }
 
-    /// Returns the number of physical blocks that belong to the node.
+    /// Returns the number of blocks that belong to the node.
     pub fn block_count(&self) -> usize {
         self.extents
             .iter()
@@ -114,10 +113,9 @@ impl Node {
             .sum()
     }
 
-    /// Maps the logical block to the physical block.
-    pub fn map_block(&mut self, logic_id: usize, block_id: usize) -> Result<()> {
+    /// Maps the block at `block offset` within the file to `block id`.
+    pub fn map_block(&mut self, mut block_offset: usize, block_id: usize) -> Result<()> {
         assert!(block_id != 0);
-        let mut offset = logic_id;
         for curr in 0..self.extents.len() {
             if self.extents[curr].is_null() {
                 // All allocated extents were passed or there was none
@@ -125,16 +123,14 @@ impl Node {
                     // There is a previous extent
                     let prev = curr - 1;
                     let is_hole = self.extents[prev].is_hole();
-                    let logic_contiguous = offset == 0;
-                    let phys_contiguous = self.extents[prev].end == block_id;
-                    let contiguous = logic_contiguous && phys_contiguous;
+                    let contiguous = block_offset == 0 && self.extents[prev].end == block_id;
                     if !is_hole && contiguous {
                         // Can merge with the previous extent
                         self.extents[prev].end += 1;
                         return Ok(());
                     }
                 }
-                if offset == 0 {
+                if block_offset == 0 {
                     self.extents[curr].start = block_id;
                     self.extents[curr].end = block_id + 1;
                 } else {
@@ -143,7 +139,7 @@ impl Node {
                         return Err(Error::OutOfExtents);
                     }
                     // Make the current extent a hole and map the next one
-                    self.extents[curr].end = offset;
+                    self.extents[curr].end = block_offset;
                     self.extents[next].start = block_id;
                     self.extents[next].end = block_id + 1;
                 }
@@ -151,8 +147,8 @@ impl Node {
             }
 
             let blocks_in_curr = self.extents[curr].len();
-            if offset < blocks_in_curr {
-                // Logical block resides inside this extent
+            if block_offset < blocks_in_curr {
+                // Block resides inside this extent
                 let is_hole = self.extents[curr].is_hole();
                 if !is_hole {
                     return Err(Error::AlreadyMapped);
@@ -160,10 +156,10 @@ impl Node {
 
                 // Split the hole into three extents:
                 let mut exts = [Extent::default(); 3];
-                exts[0].end = offset; // Left hole
+                exts[0].end = block_offset; // Left hole
                 exts[1].start = block_id;
                 exts[1].end = block_id + 1;
-                exts[2].end = blocks_in_curr - offset - 1; // Right hole
+                exts[2].end = blocks_in_curr - block_offset - 1; // Right hole
                 // Remove empty hole, if there is one
                 // (i.e. the first/last block of the hole is mapped)
                 let exts: Vec<Extent> = exts.into_iter().filter(|e| !e.is_null()).collect();
@@ -179,12 +175,12 @@ impl Node {
 
                 return Ok(());
             }
-            offset -= blocks_in_curr;
+            block_offset -= blocks_in_curr;
         }
         Err(Error::OutOfExtents)
     }
 
-    /// Appends a sparse region of 'count' logical blocks to the end of node's extents.
+    /// Appends a sparse region of 'count' blocks to the end of node's extents.
     pub fn append_hole(&mut self, count: usize) -> Result<()> {
         assert!(count != 0);
         for i in 0..self.extents.len() {
@@ -217,7 +213,7 @@ pub enum FileType {
     Symlink,
 }
 
-/// Represents a contiguous span of physical blocks.
+/// Represents a contiguous span of blocks.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 #[derive(FromBytes, IntoBytes, Immutable)]
@@ -227,17 +223,17 @@ pub struct Extent {
 }
 
 impl Extent {
-    /// Returns the physical block that marks the start of the extent.
+    /// Returns the block that marks the start of the extent.
     pub fn start(&self) -> usize {
         self.start
     }
 
-    /// Returns the physical block that marks the end (exclusive) of the extent.
+    /// Returns the block that marks the end (exclusive) of the extent.
     pub fn end(&self) -> usize {
         self.end
     }
 
-    /// Checks whether the extent does not point to any physical blocks.
+    /// Checks whether the extent does not point to any blocks.
     pub fn is_null(&self) -> bool {
         self.start == 0 && self.end == 0
     }
