@@ -431,6 +431,17 @@ impl<'a> Transaction<'a> {
 
     /// Finds the node at `path`, using `start_node_ptr` as the start if `path` is relative.
     pub fn path_node(&self, path: &Path, start_node_ptr: NodePtr) -> Result<NodePtr> {
+        self._path_node(path, start_node_ptr, 0)
+    }
+
+    /// Internal implementation of the `path_node` function.
+    /// `depth` describes how deep into the recursive call chain the function is.
+    fn _path_node(&self, path: &Path, start_node_ptr: NodePtr, depth: usize) -> Result<NodePtr> {
+        const MAX_DEPTH: usize = 16;
+        if depth >= MAX_DEPTH {
+            return Err(Error::TooManySymlinks);
+        }
+
         let mut curr_node_ptr = start_node_ptr;
         for part in path.as_parts() {
             match part.as_ref() {
@@ -446,7 +457,7 @@ impl<'a> Transaction<'a> {
             let entry = self.find_entry(curr_node_ptr, part.as_ref())?;
             curr_node_ptr = if entry.filetype() == FileType::Symlink {
                 let target = self.read_symlink(entry.node_ptr())?;
-                self.path_node(&target, curr_node_ptr)?
+                self._path_node(&target, curr_node_ptr, depth + 1)?
             } else {
                 entry.node_ptr()
             }
@@ -521,7 +532,7 @@ pub enum Error {
     DirNotEmpty,
     FileExists,
     NotSymlink,
-    TooManyHops,
+    TooManySymlinks,
 }
 
 impl From<directory::Error> for Error {
