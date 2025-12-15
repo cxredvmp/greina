@@ -3,8 +3,8 @@ use os_lab_4::kernel::Kernel;
 use std::io::{self, Write};
 
 fn main() {
-    // Initialize a 64KB in-memory storage
-    let storage_size = 64 * 1024;
+    // Initialize a 1 MiB in-memory storage
+    let storage_size = 1024 * 1024;
     let storage = Storage::new(storage_size);
     let mut kernel = Kernel::new(storage);
 
