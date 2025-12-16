@@ -7,7 +7,7 @@ use crate::{
     block::{BLOCK_SIZE, Block, BlockAddr},
     fs::{
         Filesystem,
-        alloc_map::{self},
+        alloc_map::{self, AllocMap},
         directory::{self, Dir, DirEntry, DirEntryName},
         node::{self, FileType, NODE_SIZE, Node, NodePtr},
         path::{self, Path},
@@ -21,14 +21,21 @@ type Changes = BTreeMap<BlockAddr, Block>;
 /// Filesystem operation that buffers changes in memory before commiting them to persistent storage.
 pub struct Transaction<'a, S: Storage> {
     fs: &'a mut Filesystem<S>,
+    // TODO: Replace full clones with caching changes only
+    block_map: AllocMap,
+    node_map: AllocMap,
     changes: Changes,
 }
 
 impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
     pub fn new(fs: &'a mut Filesystem<S>) -> Self {
+        let block_map = fs.block_map.clone();
+        let node_map = fs.node_map.clone();
         Self {
             fs,
+            block_map,
+            node_map,
             changes: Changes::new(),
         }
     }
@@ -47,6 +54,8 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Queues a synchronization of allocation maps.
     fn sync_maps(&mut self) -> Result<()> {
+        self.fs.block_map = self.block_map.clone();
+        self.fs.node_map = self.node_map.clone();
         for (map, map_start) in [
             (&self.fs.block_map, self.fs.superblock.block_map_start),
             (&self.fs.node_map, self.fs.superblock.node_map_start),
@@ -117,7 +126,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Allocates a node, returning it and its pointer.
     pub fn create_node(&mut self, filetype: FileType) -> Result<(Node, NodePtr)> {
         let node = Node::new(filetype);
-        let (id, _) = self.fs.node_map.allocate(1).map_err(Error::Alloc)?;
+        let (id, _) = self.node_map.allocate(1).map_err(Error::Alloc)?;
         let node_ptr = NodePtr::new(id);
         self.write_node(&node, node_ptr)?;
         Ok((node, node_ptr))
@@ -130,12 +139,12 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let spans = node.truncate(0);
         for span in spans {
             // Free the blocks
-            self.fs.block_map.free_span(span).map_err(Error::Alloc)?;
+            self.block_map.free_span(span).map_err(Error::Alloc)?;
         }
 
         // Free the node
         let id = node_ptr.id();
-        self.fs.node_map.free_at(id).map_err(Error::Alloc)?;
+        self.node_map.free_at(id).map_err(Error::Alloc)?;
 
         let node = Node::default();
         self.write_node(&node, node_ptr)?;
@@ -198,7 +207,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
                 Some(addr) => (addr, false),
                 None => {
                     // Allocate a block
-                    let (addr, _) = self.fs.block_map.allocate(1).map_err(Error::Alloc)?;
+                    let (addr, _) = self.block_map.allocate(1).map_err(Error::Alloc)?;
                     node.map_block(block_offset, addr).map_err(Error::Node)?;
                     node_updated = true;
                     (addr, true)
@@ -271,7 +280,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let spans = node.truncate(size);
         for span in spans {
             // Free the blocks, if shrinked
-            self.fs.block_map.free_span(span).map_err(Error::Alloc)?;
+            self.block_map.free_span(span).map_err(Error::Alloc)?;
         }
 
         self.write_node(&node, node_ptr)?;

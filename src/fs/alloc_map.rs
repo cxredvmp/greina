@@ -1,6 +1,7 @@
 use zerocopy::{Immutable, IntoBytes, TryFromBytes};
 
 /// Tracks allocation state of objects.
+#[derive(Clone)]
 pub struct AllocMap {
     flags: Box<[AllocFlag]>,
 }
