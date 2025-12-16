@@ -66,7 +66,7 @@ impl Node {
 
     /// Converts byte `offset` into a block offset.
     pub const fn get_block_offset_from_offset(offset: u64) -> u64 {
-        offset as u64 / BLOCK_SIZE
+        offset / BLOCK_SIZE
     }
 
     /// Resolves byte `offset` into a block address.

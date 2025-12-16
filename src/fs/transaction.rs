@@ -101,10 +101,10 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let offset = self
             .get_node_offset(node_ptr)
             .ok_or(Error::NodePtrOutOfBounds)?;
-        Ok(Node::try_read_from_bytes(
-            &block.data[offset as usize..(offset as usize + NODE_SIZE as usize)],
+        Ok(
+            Node::try_read_from_bytes(&block.data[offset as usize..(offset as usize + NODE_SIZE)])
+                .expect("'bytes' must be a valid 'Node'"),
         )
-        .expect("'bytes' must be a valid 'Node'"))
     }
 
     // Queues a write of the node to the node table.
@@ -117,8 +117,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let offset = self
             .get_node_offset(node_ptr)
             .ok_or(Error::NodePtrOutOfBounds)?;
-        block.data[offset as usize..(offset as usize + NODE_SIZE as usize)]
-            .copy_from_slice(node.as_bytes());
+        block.data[offset as usize..(offset as usize + NODE_SIZE)].copy_from_slice(node.as_bytes());
         self.write_block_at(&block, addr);
         Ok(())
     }

@@ -35,6 +35,7 @@ impl FileStorage {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(path)
             .into_errno()?;
         file.set_len(block_count * BLOCK_SIZE).into_errno()?;
