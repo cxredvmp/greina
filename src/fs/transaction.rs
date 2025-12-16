@@ -180,15 +180,10 @@ impl<'a, S: Storage> Transaction<'a, S> {
         Ok(bytes_read)
     }
 
-    // BUG: Doesn't allow to write past the end of the file.
     /// Writes a number of bytes from `buf` to the file starting from `offset`.
     /// Returns the number of byttes written.
     pub fn write_file_at(&mut self, node_ptr: NodePtr, offset: u64, buf: &[u8]) -> Result<u64> {
         let mut node = self.read_node(node_ptr)?;
-
-        if offset > node.size {
-            return Ok(0);
-        };
 
         let bytes_to_write = buf.len() as u64;
         let mut bytes_written = 0;
@@ -198,6 +193,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             let curr_pos = offset + bytes_written;
             let offset_in_block = curr_pos % BLOCK_SIZE; // First write might be unaligned
             let block_offset = Node::get_block_offset_from_offset(curr_pos);
+
             let (addr, has_alloc) = match node.get_block_addr(block_offset) {
                 Some(addr) => (addr, false),
                 None => {
@@ -208,16 +204,19 @@ impl<'a, S: Storage> Transaction<'a, S> {
                     (addr, true)
                 }
             };
-            let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
-            // Don't need to read if it's a freshly allocated block
+
             let mut block = Block::default();
+            // Don't need to read if it's a freshly allocated block
             if !has_alloc {
                 self.read_block_at(&mut block, addr)?
             };
+
+            let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
             block.data[offset_in_block as usize..(offset_in_block + chunk_size) as usize]
                 .copy_from_slice(
                     &buf[bytes_written as usize..(bytes_written + chunk_size) as usize],
                 );
+
             self.write_block_at(&block, addr);
             bytes_written += chunk_size;
         }
