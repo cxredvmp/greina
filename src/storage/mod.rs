@@ -2,6 +2,8 @@ use libc::c_int;
 
 use crate::block::{Block, BlockAddr};
 
+pub mod file;
+
 /// Represents a block device.
 pub trait Storage {
     /// Reads the block at `addr` into `block`.
