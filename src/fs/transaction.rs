@@ -8,7 +8,7 @@ use crate::{
     fs::{
         Filesystem,
         alloc_map::{self, AllocMap},
-        directory::{self, Dir, DirEntry, DirEntryName},
+        dir::{self, Dir, DirEntry, DirEntryName},
         node::{self, FileType, NODE_SIZE, Node, NodePtr},
         path::{self, Path},
     },
@@ -252,7 +252,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     ) -> Result<NodePtr> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut parent = self.read_directory(parent_ptr)?;
+        let mut parent = self.read_dir(parent_ptr)?;
         if parent.get_entry(name).is_some() {
             return Err(Error::FileExists);
         }
@@ -263,7 +263,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let entry = DirEntry::new(node_ptr, filetype, name);
         parent.add_entry(entry);
 
-        self.write_directory(parent_ptr, &parent)?;
+        self.write_dir(parent_ptr, &parent)?;
         self.write_node(&node, node_ptr)?;
 
         Ok(node_ptr)
@@ -287,7 +287,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     /// Reads the directory.
-    pub fn read_directory(&self, node_ptr: NodePtr) -> Result<Dir> {
+    pub fn read_dir(&self, node_ptr: NodePtr) -> Result<Dir> {
         let node = self.read_node(node_ptr)?;
         if node.filetype() != FileType::Dir {
             return Err(Error::NotDir);
@@ -299,7 +299,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     /// Writes the directory.
-    pub fn write_directory(&mut self, node_ptr: NodePtr, dir: &Dir) -> Result<()> {
+    pub fn write_dir(&mut self, node_ptr: NodePtr, dir: &Dir) -> Result<()> {
         let bytes = dir.as_slice().as_bytes();
         self.write_file_at(node_ptr, 0, bytes)?;
         Ok(())
@@ -307,16 +307,16 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Creates a directory with a given name inside `parent_ptr`.
     /// Returns the directory's node pointer.
-    pub fn create_directory(&mut self, parent_ptr: NodePtr, name: &str) -> Result<NodePtr> {
+    pub fn create_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<NodePtr> {
         let node_ptr = self.create_file(parent_ptr, name, FileType::Dir)?;
         let dir = Dir::new(node_ptr, parent_ptr);
-        self.write_directory(node_ptr, &dir)?;
+        self.write_dir(node_ptr, &dir)?;
         Ok(node_ptr)
     }
 
     /// Removes the empty directory `name` inside `parent_ptr`.
-    pub fn remove_directory(&mut self, parent_ptr: NodePtr, name: &str) -> Result<()> {
-        let mut parent_dir = self.read_directory(parent_ptr)?;
+    pub fn remove_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<()> {
+        let mut parent_dir = self.read_dir(parent_ptr)?;
 
         let name = DirEntryName::try_from(name)?;
         let entry = parent_dir.get_entry(name).ok_or(Error::NodeNotFound)?;
@@ -326,13 +326,13 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         let node_ptr = entry.node_ptr();
-        let dir = self.read_directory(node_ptr)?;
+        let dir = self.read_dir(node_ptr)?;
         if !dir.is_empty() {
             return Err(Error::DirNotEmpty);
         }
 
         parent_dir.remove_entry(name)?;
-        self.write_directory(parent_ptr, &parent_dir)?;
+        self.write_dir(parent_ptr, &parent_dir)?;
 
         self.remove_node(node_ptr)
     }
@@ -341,7 +341,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn link_file(&mut self, parent_ptr: NodePtr, node_ptr: NodePtr, name: &str) -> Result<()> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut dir = self.read_directory(parent_ptr)?;
+        let mut dir = self.read_dir(parent_ptr)?;
         if dir.get_entry(name).is_some() {
             return Err(Error::FileExists);
         }
@@ -356,7 +356,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         node.link_count += 1;
 
         self.write_node(&node, node_ptr)?;
-        self.write_directory(parent_ptr, &dir)?;
+        self.write_dir(parent_ptr, &dir)?;
         Ok(())
     }
 
@@ -365,14 +365,14 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn unlink_file(&mut self, parent_ptr: NodePtr, name: &str, free: bool) -> Result<()> {
         let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
 
-        let mut dir = self.read_directory(parent_ptr)?;
+        let mut dir = self.read_dir(parent_ptr)?;
         let entry = dir.get_entry(name).ok_or(Error::NodeNotFound)?;
         if entry.filetype() == FileType::Dir {
             return Err(Error::IsDir);
         }
 
         let node_ptr = dir.remove_entry(name).map_err(Error::Dir)?;
-        self.write_directory(parent_ptr, &dir)?;
+        self.write_dir(parent_ptr, &dir)?;
 
         let mut node = self.read_node(node_ptr)?;
         node.link_count -= 1;
@@ -413,7 +413,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Finds the entry named `name` inside `parent_ptr`.
     pub fn find_entry(&self, parent_ptr: NodePtr, name: &str) -> Result<DirEntry> {
         let name = DirEntryName::try_from(name)?;
-        let dir = self.read_directory(parent_ptr)?;
+        let dir = self.read_dir(parent_ptr)?;
         dir.get_entry(name).ok_or(Error::NodeNotFound).copied()
     }
 
@@ -482,7 +482,7 @@ pub enum Error {
     Storage(c_int),
     NodePtrOutOfBounds,
     Alloc(alloc_map::Error),
-    Dir(directory::Error),
+    Dir(dir::Error),
     Node(node::Error),
     Path(path::Error),
     NodeNotFound,
@@ -496,8 +496,8 @@ pub enum Error {
     TooManySymlinks,
 }
 
-impl From<directory::Error> for Error {
-    fn from(value: directory::Error) -> Self {
+impl From<dir::Error> for Error {
+    fn from(value: dir::Error) -> Self {
         Self::Dir(value)
     }
 }

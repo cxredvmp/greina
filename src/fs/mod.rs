@@ -5,7 +5,7 @@ use crate::{
     block::{Block, BlockAddr},
     fs::{
         alloc_map::{AllocFlag, AllocMap},
-        directory::Dir,
+        dir::Dir,
         node::{FileType, NodePtr},
         superblock::Superblock,
         transaction::{IntoTransactionResult, Transaction},
@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub mod alloc_map;
-pub mod directory;
+pub mod dir;
 pub mod node;
 pub mod path;
 pub mod superblock;
@@ -73,7 +73,7 @@ impl<S: Storage> Filesystem<S> {
                 .expect("Must be able to create the root node");
             assert!(root_id == NodePtr::root());
             let root = Dir::new(root_id, root_id);
-            tx.write_directory(root_id, &root)
+            tx.write_dir(root_id, &root)
                 .expect("Must be able to write the root directory");
 
             tx.commit()?;
