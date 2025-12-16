@@ -250,21 +250,17 @@ impl<'a, S: Storage> Transaction<'a, S> {
         name: &str,
         filetype: FileType,
     ) -> Result<NodePtr> {
-        let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
-
+        let name = DirEntryName::try_from(name)?;
         let mut parent = self.read_dir(parent_ptr)?;
-        if parent.get_entry(name).is_some() {
-            return Err(Error::FileExists);
-        }
 
         let (mut node, node_ptr) = self.create_node(filetype)?;
         node.link_count += 1;
 
         let entry = DirEntry::new(node_ptr, filetype, name);
-        parent.add_entry(entry);
+        parent.add_entry(entry)?;
 
-        self.write_dir(parent_ptr, &parent)?;
         self.write_node(&node, node_ptr)?;
+        self.write_dir(parent_ptr, &parent)?;
 
         Ok(node_ptr)
     }
@@ -309,42 +305,104 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Returns the directory's node pointer.
     pub fn create_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<NodePtr> {
         let node_ptr = self.create_file(parent_ptr, name, FileType::Dir)?;
-        let dir = Dir::new(node_ptr, parent_ptr);
-        self.write_dir(node_ptr, &dir)?;
+        let parent = Dir::new(node_ptr, parent_ptr);
+        self.write_dir(node_ptr, &parent)?;
         Ok(node_ptr)
     }
 
     /// Removes the empty directory `name` inside `parent_ptr`.
     pub fn remove_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<()> {
-        let mut parent_dir = self.read_dir(parent_ptr)?;
-
         let name = DirEntryName::try_from(name)?;
-        let entry = parent_dir.get_entry(name).ok_or(Error::NodeNotFound)?;
+        let mut parent = self.read_dir(parent_ptr)?;
 
+        let entry = parent.remove_entry(name).ok_or(Error::NodeNotFound)?;
         if entry.filetype() != FileType::Dir {
             return Err(Error::NotDir);
         }
 
-        let node_ptr = entry.node_ptr();
+        let node_ptr = entry.node_ptr;
         let dir = self.read_dir(node_ptr)?;
         if !dir.is_empty() {
             return Err(Error::DirNotEmpty);
         }
 
-        parent_dir.remove_entry(name)?;
-        self.write_dir(parent_ptr, &parent_dir)?;
+        self.write_dir(parent_ptr, &parent)?;
+        self.remove_node(node_ptr)?;
 
-        self.remove_node(node_ptr)
+        Ok(())
+    }
+
+    /// Finds the entry named `name` inside `parent_ptr`.
+    pub fn find_entry(&self, parent_ptr: NodePtr, name: &str) -> Result<DirEntry> {
+        let name = DirEntryName::try_from(name)?;
+        let parent = self.read_dir(parent_ptr)?;
+        parent.get_entry(name).ok_or(Error::NodeNotFound).copied()
+    }
+
+    /// Renames the entry named `old_name` to `new_name` and moves it from `old_parent_ptr` to
+    /// `new_parent_ptr`.
+    pub fn rename_entry(
+        &mut self,
+        old_parent_ptr: NodePtr,
+        old_name: &str,
+        new_parent_ptr: NodePtr,
+        new_name: &str,
+    ) -> Result<()> {
+        let old_name = DirEntryName::try_from(old_name)?;
+        let new_name = DirEntryName::try_from(new_name)?;
+        let mut old_parent = self.read_dir(old_parent_ptr)?;
+
+        let mut entry = old_parent
+            .remove_entry(old_name)
+            .ok_or(Error::NodeNotFound)?;
+        entry.name = new_name;
+
+        if old_parent_ptr == new_parent_ptr {
+            old_parent.add_entry(entry)?;
+            return self.write_dir(old_parent_ptr, &old_parent);
+        }
+
+        let mut new_parent = self.read_dir(new_parent_ptr)?;
+
+        if entry.filetype() == FileType::Dir {
+            if self.is_ancestor_dir(entry.node_ptr, new_parent_ptr)? {
+                return Err(Error::InvalidMove);
+            }
+
+            let mut dir = self.read_dir(entry.node_ptr)?;
+            let parent_entry = dir.get_mut_parent();
+            parent_entry.node_ptr = new_parent_ptr;
+            self.write_dir(entry.node_ptr, &dir)?;
+        }
+
+        new_parent.add_entry(entry)?;
+
+        self.write_dir(old_parent_ptr, &old_parent)?;
+        self.write_dir(new_parent_ptr, &new_parent)?;
+
+        Ok(())
+    }
+
+    /// Checks if `ancestor_ptr` is an ancestor directory of `dir_ptr` directory.
+    /// Ancestry is reflexive, i.e. a directory is its own ancestor.
+    fn is_ancestor_dir(&self, ancestor_ptr: NodePtr, dir_ptr: NodePtr) -> Result<bool> {
+        let root = NodePtr::root();
+        let mut curr_parent_ptr = dir_ptr;
+        loop {
+            if curr_parent_ptr == ancestor_ptr {
+                return Ok(true);
+            } else if curr_parent_ptr == root {
+                return Ok(false);
+            }
+            let parent = self.read_dir(curr_parent_ptr)?;
+            curr_parent_ptr = parent.parent_ptr();
+        }
     }
 
     /// Creates a hard link to the file with a given name.
     pub fn link_file(&mut self, parent_ptr: NodePtr, node_ptr: NodePtr, name: &str) -> Result<()> {
-        let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
-
-        let mut dir = self.read_dir(parent_ptr)?;
-        if dir.get_entry(name).is_some() {
-            return Err(Error::FileExists);
-        }
+        let name = DirEntryName::try_from(name)?;
+        let mut parent = self.read_dir(parent_ptr)?;
 
         let mut node = self.read_node(node_ptr)?;
         if node.filetype() == FileType::Dir {
@@ -352,31 +410,31 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         let entry = DirEntry::new(node_ptr, node.filetype(), name);
-        dir.add_entry(entry);
+        parent.add_entry(entry)?;
         node.link_count += 1;
 
         self.write_node(&node, node_ptr)?;
-        self.write_dir(parent_ptr, &dir)?;
+        self.write_dir(parent_ptr, &parent)?;
+
         Ok(())
     }
 
     /// Removes a hard link to the file with a given name.
     /// If `free` is true, deletes the node if `node.link_count` drops to 0, else it must be deallocated manually.
     pub fn unlink_file(&mut self, parent_ptr: NodePtr, name: &str, free: bool) -> Result<()> {
-        let name = DirEntryName::try_from(name).map_err(Error::Dir)?;
+        let name = DirEntryName::try_from(name)?;
+        let mut parent = self.read_dir(parent_ptr)?;
 
-        let mut dir = self.read_dir(parent_ptr)?;
-        let entry = dir.get_entry(name).ok_or(Error::NodeNotFound)?;
+        let entry = parent.remove_entry(name).ok_or(Error::NodeNotFound)?;
         if entry.filetype() == FileType::Dir {
             return Err(Error::IsDir);
         }
 
-        let node_ptr = dir.remove_entry(name).map_err(Error::Dir)?;
-        self.write_dir(parent_ptr, &dir)?;
-
+        let node_ptr = entry.node_ptr;
         let mut node = self.read_node(node_ptr)?;
         node.link_count -= 1;
 
+        self.write_dir(parent_ptr, &parent)?;
         if node.link_count == 0 && free {
             self.remove_node(node_ptr)?;
         } else {
@@ -410,13 +468,6 @@ impl<'a, S: Storage> Transaction<'a, S> {
         Ok(node_ptr)
     }
 
-    /// Finds the entry named `name` inside `parent_ptr`.
-    pub fn find_entry(&self, parent_ptr: NodePtr, name: &str) -> Result<DirEntry> {
-        let name = DirEntryName::try_from(name)?;
-        let dir = self.read_dir(parent_ptr)?;
-        dir.get_entry(name).ok_or(Error::NodeNotFound).copied()
-    }
-
     /// Finds the node at `path`, using `start_node_ptr` as the start if `path` is relative.
     pub fn path_node(&self, path: &Path, start_node_ptr: NodePtr) -> Result<NodePtr> {
         self._path_node(path, start_node_ptr, 0)
@@ -444,10 +495,10 @@ impl<'a, S: Storage> Transaction<'a, S> {
             }
             let entry = self.find_entry(curr_node_ptr, part.as_ref())?;
             curr_node_ptr = if entry.filetype() == FileType::Symlink {
-                let target = self.read_symlink(entry.node_ptr())?;
+                let target = self.read_symlink(entry.node_ptr)?;
                 self._path_node(&target, curr_node_ptr, depth + 1)?
             } else {
-                entry.node_ptr()
+                entry.node_ptr
             }
         }
         Ok(curr_node_ptr)
@@ -491,9 +542,9 @@ pub enum Error {
     IsDir,
     CorruptedDir,
     DirNotEmpty,
-    FileExists,
     NotSymlink,
     TooManySymlinks,
+    InvalidMove,
 }
 
 impl From<dir::Error> for Error {
