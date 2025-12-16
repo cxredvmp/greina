@@ -123,8 +123,14 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     /// Allocates a node, returning it and its pointer.
-    pub fn create_node(&mut self, filetype: FileType) -> Result<(Node, NodePtr)> {
-        let node = Node::new(filetype);
+    pub fn create_node(
+        &mut self,
+        file_type: FileType,
+        perms: u16,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(Node, NodePtr)> {
+        let node = Node::new(file_type, perms, uid, gid);
         let (id, _) = self.node_map.allocate(1).map_err(Error::Alloc)?;
         let node_ptr = NodePtr::new(id);
         self.write_node(&node, node_ptr)?;
@@ -248,15 +254,18 @@ impl<'a, S: Storage> Transaction<'a, S> {
         &mut self,
         parent_ptr: NodePtr,
         name: &str,
-        filetype: FileType,
+        file_type: FileType,
+        perms: u16,
+        uid: u32,
+        gid: u32,
     ) -> Result<NodePtr> {
         let name = DirEntryName::try_from(name)?;
         let mut parent = self.read_dir(parent_ptr)?;
 
-        let (mut node, node_ptr) = self.create_node(filetype)?;
-        node.link_count += 1;
+        let (mut node, node_ptr) = self.create_node(file_type, perms, uid, gid)?;
+        node.links += 1;
 
-        let entry = DirEntry::new(node_ptr, filetype, name);
+        let entry = DirEntry::new(node_ptr, file_type, name);
         parent.add_entry(entry)?;
 
         self.write_node(&node, node_ptr)?;
@@ -268,7 +277,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Truncates the file's size to `size`.
     pub fn truncate_file(&mut self, node_ptr: NodePtr, size: u64) -> Result<()> {
         let mut node = self.read_node(node_ptr)?;
-        if node.filetype() != FileType::File {
+        if node.file_type != FileType::File {
             return Err(Error::NotFile);
         }
 
@@ -285,7 +294,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Reads the directory.
     pub fn read_dir(&self, node_ptr: NodePtr) -> Result<Dir> {
         let node = self.read_node(node_ptr)?;
-        if node.filetype() != FileType::Dir {
+        if node.file_type != FileType::Dir {
             return Err(Error::NotDir);
         }
         let mut buf = vec![0u8; node.size as usize];
@@ -303,8 +312,15 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Creates a directory with a given name inside `parent_ptr`.
     /// Returns the directory's node pointer.
-    pub fn create_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<NodePtr> {
-        let node_ptr = self.create_file(parent_ptr, name, FileType::Dir)?;
+    pub fn create_dir(
+        &mut self,
+        parent_ptr: NodePtr,
+        name: &str,
+        perms: u16,
+        uid: u32,
+        gid: u32,
+    ) -> Result<NodePtr> {
+        let node_ptr = self.create_file(parent_ptr, name, FileType::Dir, perms, uid, gid)?;
         let parent = Dir::new(node_ptr, parent_ptr);
         self.write_dir(node_ptr, &parent)?;
         Ok(node_ptr)
@@ -316,7 +332,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let mut parent = self.read_dir(parent_ptr)?;
 
         let entry = parent.remove_entry(name).ok_or(Error::NodeNotFound)?;
-        if entry.filetype() != FileType::Dir {
+        if entry.file_type != FileType::Dir {
             return Err(Error::NotDir);
         }
 
@@ -364,7 +380,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
         let mut new_parent = self.read_dir(new_parent_ptr)?;
 
-        if entry.filetype() == FileType::Dir {
+        if entry.file_type == FileType::Dir {
             if self.is_ancestor_dir(entry.node_ptr, new_parent_ptr)? {
                 return Err(Error::InvalidMove);
             }
@@ -405,13 +421,13 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let mut parent = self.read_dir(parent_ptr)?;
 
         let mut node = self.read_node(node_ptr)?;
-        if node.filetype() == FileType::Dir {
+        if node.file_type == FileType::Dir {
             return Err(Error::IsDir);
         }
 
-        let entry = DirEntry::new(node_ptr, node.filetype(), name);
+        let entry = DirEntry::new(node_ptr, node.file_type, name);
         parent.add_entry(entry)?;
-        node.link_count += 1;
+        node.links += 1;
 
         self.write_node(&node, node_ptr)?;
         self.write_dir(parent_ptr, &parent)?;
@@ -426,16 +442,16 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let mut parent = self.read_dir(parent_ptr)?;
 
         let entry = parent.remove_entry(name).ok_or(Error::NodeNotFound)?;
-        if entry.filetype() == FileType::Dir {
+        if entry.file_type == FileType::Dir {
             return Err(Error::IsDir);
         }
 
         let node_ptr = entry.node_ptr;
         let mut node = self.read_node(node_ptr)?;
-        node.link_count -= 1;
+        node.links -= 1;
 
         self.write_dir(parent_ptr, &parent)?;
-        if node.link_count == 0 && free {
+        if node.links == 0 && free {
             self.remove_node(node_ptr)?;
         } else {
             self.write_node(&node, node_ptr)?;
@@ -447,7 +463,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Returns the path contained inside `symlink_ptr`.
     pub fn read_symlink(&self, symlink_ptr: NodePtr) -> Result<Path<'_>> {
         let node = self.read_node(symlink_ptr)?;
-        if node.filetype() != FileType::Symlink {
+        if node.file_type != FileType::Symlink {
             return Err(Error::NotSymlink);
         }
         let mut buf = vec![0u8; node.size as usize];
@@ -462,8 +478,10 @@ impl<'a, S: Storage> Transaction<'a, S> {
         parent_ptr: NodePtr,
         name: &str,
         target: &Path,
+        uid: u32,
+        gid: u32,
     ) -> Result<NodePtr> {
-        let node_ptr = self.create_file(parent_ptr, name, FileType::Symlink)?;
+        let node_ptr = self.create_file(parent_ptr, name, FileType::Symlink, 0o777u16, uid, gid)?;
         self.write_file_at(node_ptr, 0, target.as_bytes())?;
         Ok(node_ptr)
     }
@@ -494,7 +512,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
                 _ => (),
             }
             let entry = self.find_entry(curr_node_ptr, part.as_ref())?;
-            curr_node_ptr = if entry.filetype() == FileType::Symlink {
+            curr_node_ptr = if entry.file_type == FileType::Symlink {
                 let target = self.read_symlink(entry.node_ptr)?;
                 self._path_node(&target, curr_node_ptr, depth + 1)?
             } else {

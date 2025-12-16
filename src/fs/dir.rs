@@ -89,7 +89,7 @@ impl Dir {
 #[derive(Clone, Copy)]
 #[derive(TryFromBytes, IntoBytes, Immutable)]
 pub struct DirEntry {
-    filetype: FileType,
+    pub file_type: FileType,
     _pad: [u8; 7],
     pub node_ptr: NodePtr,
     pub name: DirEntryName,
@@ -97,11 +97,11 @@ pub struct DirEntry {
 
 impl DirEntry {
     /// Constructs a directory entry with a given node pointer, file type and name.
-    pub fn new(node_ptr: NodePtr, filetype: FileType, name: DirEntryName) -> Self {
+    pub fn new(node_ptr: NodePtr, file_type: FileType, name: DirEntryName) -> Self {
         Self {
             node_ptr,
             _pad: [0u8; 7],
-            filetype,
+            file_type,
             name,
         }
     }
@@ -119,10 +119,6 @@ impl DirEntry {
     /// Checks if the entry contains a null node pointer.
     pub fn is_null(&self) -> bool {
         self.node_ptr.is_null()
-    }
-
-    pub fn filetype(&self) -> FileType {
-        self.filetype
     }
 }
 

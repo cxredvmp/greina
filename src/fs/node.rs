@@ -1,3 +1,5 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use zerocopy::{FromBytes, Immutable, IntoBytes, TryFromBytes};
 
 use crate::block::{BLOCK_SIZE, BlockAddr};
@@ -36,32 +38,62 @@ impl NodePtr {
 pub const NODE_SIZE: usize = size_of::<Node>();
 
 /// How many extents a node can have.
-const EXTENTS_PER_NODE: usize = 15;
+const MAX_EXTENTS: usize = 26;
 
 /// Represents a file system object.
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 #[derive(TryFromBytes, IntoBytes, Immutable)]
 pub struct Node {
+    // File size in bytes
     pub size: u64,
-    pub link_count: u32,
-    filetype: FileType,
-    _pad: [u8; 3],
-    extents: [Extent; EXTENTS_PER_NODE],
+
+    // File type
+    pub file_type: FileType,
+    _pad: [u8; 1],
+
+    /// File permissions
+    pub perms: u16,
+
+    // Number of hard links
+    pub links: u32,
+
+    /// User owner of the file
+    pub uid: u32,
+    /// Group owner of the file
+    pub gid: u32,
+
+    // Node creation time
+    pub create_time: NodeTime,
+    // Node modification time
+    pub change_time: NodeTime,
+    // File access time
+    pub access_time: NodeTime,
+    // File modification time
+    pub mod_time: NodeTime,
+
+    // Header is 88 bytes, reserve 8 bytes to get to 96 bytes,
+    // leaving 512 - 96 = 416 bytes for 416 / 16 = 26 extents
+    _reserved: [u8; 8],
+
+    extents: [Extent; MAX_EXTENTS],
 }
 
 impl Node {
     /// Constructs a `Node` of a given filetype.
-    pub fn new(filetype: FileType) -> Self {
+    pub fn new(filetype: FileType, perms: u16, uid: u32, gid: u32) -> Self {
+        let now = NodeTime::from(SystemTime::now());
         Self {
-            filetype,
+            file_type: filetype,
+            perms,
+            uid,
+            gid,
+            create_time: now,
+            change_time: now,
+            access_time: now,
+            mod_time: now,
             ..Default::default()
         }
-    }
-
-    /// Returns node's file type.
-    pub fn filetype(&self) -> FileType {
-        self.filetype
     }
 
     /// Converts byte `offset` into a block offset.
@@ -180,7 +212,7 @@ impl Node {
         Err(Error::OutOfExtents)
     }
 
-    /// Truncates the node's size to `size`.
+    /// Truncates the file's size to `size`.
     /// Optionally, returns addresses of discarded blocks as a list of spans.
     pub fn truncate(&mut self, size: u64) -> Vec<(u64, u64)> {
         let mut discarded = Vec::new();
@@ -223,6 +255,53 @@ impl Node {
         }
 
         discarded
+    }
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        // I think there's actually no better way to do this
+        Self {
+            size: Default::default(),
+            file_type: Default::default(),
+            _pad: Default::default(),
+            perms: Default::default(),
+            links: Default::default(),
+            uid: Default::default(),
+            gid: Default::default(),
+            create_time: Default::default(),
+            change_time: Default::default(),
+            access_time: Default::default(),
+            mod_time: Default::default(),
+            _reserved: Default::default(),
+            extents: [Extent::default(); MAX_EXTENTS],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+#[derive(FromBytes, IntoBytes, Immutable)]
+pub struct NodeTime {
+    secs: u64,
+    nanos: u32,
+    _pad: [u8; 4],
+}
+
+impl From<SystemTime> for NodeTime {
+    fn from(time: SystemTime) -> Self {
+        let duration = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+        Self {
+            secs: duration.as_secs(),
+            nanos: duration.subsec_nanos(),
+            _pad: [0u8; 4],
+        }
+    }
+}
+
+impl From<NodeTime> for SystemTime {
+    fn from(time: NodeTime) -> Self {
+        Self::UNIX_EPOCH + Duration::new(time.secs, time.nanos)
     }
 }
 
