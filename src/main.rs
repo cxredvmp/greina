@@ -1,5 +1,5 @@
-use os_lab_4::hardware::storage::Storage;
-use os_lab_4::kernel::Kernel;
+use greina::hardware::storage::Storage;
+use greina::kernel::Kernel;
 use std::io::{self, Write};
 
 fn main() {
