@@ -64,16 +64,6 @@ impl Node {
         self.filetype
     }
 
-    /// Returns a reference to node's extents.
-    pub fn get_extents(&self) -> &[Extent] {
-        &self.extents
-    }
-
-    /// Returns a mutable reference to node's extents.
-    pub fn get_mut_extents(&mut self) -> &mut [Extent] {
-        &mut self.extents
-    }
-
     /// Converts byte `offset` into a block offset.
     pub const fn get_block_offset_from_offset(offset: u64) -> u64 {
         offset as u64 / BLOCK_SIZE
@@ -99,15 +89,6 @@ impl Node {
             block_offset -= extent_len;
         }
         None
-    }
-
-    /// Returns the number of blocks that belong to the node.
-    pub fn block_count(&self) -> u64 {
-        self.extents
-            .iter()
-            .filter(|e| !e.is_null() && !e.is_hole())
-            .map(|e| e.len())
-            .sum()
     }
 
     /// Maps the block at `block offset` within the file to `addr`.
@@ -197,6 +178,51 @@ impl Node {
         }
         Err(Error::OutOfExtents)
     }
+
+    /// Truncates the node's size to `size`.
+    /// Optionally, returns addresses of discarded blocks as a list of spans.
+    pub fn truncate(&mut self, size: u64) -> Vec<(u64, u64)> {
+        let mut discarded = Vec::new();
+
+        if size >= self.size {
+            // Growing, no need to handle blocks
+            self.size = size;
+            return discarded;
+        }
+
+        // Shrinking, some blocks need to be discarded
+        self.size = size;
+        let keep = size.div_ceil(BLOCK_SIZE);
+        let mut passed = 0;
+
+        for extent in &mut self.extents {
+            if extent.is_null() {
+                break;
+            }
+
+            let len = extent.len();
+
+            if passed >= keep {
+                // Extent is entirely not needed
+                if !extent.is_hole() {
+                    discarded.push(extent.span());
+                }
+                extent.nullify();
+            } else if passed + len > keep {
+                // Extent is partially needed
+                let new_len = keep - passed;
+                let new_end = extent.start + new_len;
+                if !extent.is_hole() {
+                    discarded.push((new_end, extent.end));
+                }
+                extent.end = new_end;
+            }
+
+            passed += len;
+        }
+
+        discarded
+    }
 }
 
 /// Represents file types.
@@ -220,44 +246,29 @@ pub struct Extent {
 }
 
 impl Extent {
-    /// Returns the block address that marks the start of the extent.
-    pub fn start(&self) -> BlockAddr {
-        self.start
-    }
-
-    /// Returns the block address that marks the end of the extent.
-    pub fn end(&self) -> BlockAddr {
-        self.end
-    }
-
     /// Checks whether the extent does not point to any blocks.
-    pub fn is_null(&self) -> bool {
+    fn is_null(&self) -> bool {
         self.start == 0 && self.end == 0
     }
 
     /// Checks whether the extent represents a hole (sparse region).
-    pub fn is_hole(&self) -> bool {
+    fn is_hole(&self) -> bool {
         self.start == 0 && self.end > 0
     }
 
     /// Zeroes out the extent.
-    pub fn nullify(&mut self) {
+    fn nullify(&mut self) {
         self.start = 0;
         self.end = 0;
     }
 
-    /// Shrinks the extent by `count` blocks.
-    pub fn shrink(&mut self, count: u64) {
-        self.end -= count;
-    }
-
     /// Returns the number of blocks this extent covers.
-    pub fn len(&self) -> u64 {
+    fn len(&self) -> u64 {
         self.end - self.start
     }
 
     /// Represesnts itself as a (start, end) span.
-    pub fn span(&self) -> (u64, u64) {
+    fn span(&self) -> (u64, u64) {
         (self.start, self.end)
     }
 }

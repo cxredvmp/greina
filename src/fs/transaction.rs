@@ -125,18 +125,15 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Removes the node, freeing its blocks.
     pub fn remove_node(&mut self, node_ptr: NodePtr) -> Result<()> {
-        let node = self.read_node(node_ptr)?;
+        let mut node = self.read_node(node_ptr)?;
 
-        // Free blocks
-        let extents = node.get_extents().iter().take_while(|e| !e.is_null());
-        for extent in extents {
-            self.fs
-                .block_map
-                .free(extent.span())
-                .map_err(Error::Alloc)?;
+        let spans = node.truncate(0);
+        for span in spans {
+            // Free the blocks
+            self.fs.block_map.free(span).map_err(Error::Alloc)?;
         }
 
-        // Free node
+        // Free the node
         let id = node_ptr.id();
         self.fs.node_map.free((id, id + 1)).map_err(Error::Alloc)?;
 
@@ -265,48 +262,19 @@ impl<'a, S: Storage> Transaction<'a, S> {
         Ok(node_ptr)
     }
 
-    /// Truncates the size of the file to `size`.
+    /// Truncates the file's size to `size`.
     pub fn truncate_file(&mut self, node_ptr: NodePtr, size: u64) -> Result<()> {
         let mut node = self.read_node(node_ptr)?;
-
         if node.filetype() != FileType::File {
             return Err(Error::NotFile);
         }
 
-        if size >= node.size {
-            node.size = size;
-            self.write_node(&node, node_ptr)?;
-            return Ok(());
+        let spans = node.truncate(size);
+        for span in spans {
+            // Free the blocks, if shrinked
+            self.fs.block_map.free(span).map_err(Error::Alloc)?;
         }
 
-        let blocks_needed = size.div_ceil(BLOCK_SIZE);
-        let mut blocks_passed = 0;
-        for extent in node.get_mut_extents() {
-            if extent.is_null() {
-                break;
-            }
-            let extent_len = extent.len();
-            if blocks_passed >= blocks_needed {
-                // Extent is entirely beyond the size
-                self.fs
-                    .block_map
-                    .free(extent.span())
-                    .map_err(Error::Alloc)?;
-                extent.nullify();
-            } else if blocks_passed + extent_len >= blocks_needed {
-                // Extent is partially needed
-                let blocks_keep = blocks_needed - blocks_passed;
-                let new_end = extent.start() + blocks_keep;
-                self.fs
-                    .block_map
-                    .free((new_end, extent.end()))
-                    .map_err(Error::Alloc)?;
-                extent.shrink(blocks_keep);
-            }
-            blocks_passed += extent_len;
-        }
-
-        node.size = size;
         self.write_node(&node, node_ptr)?;
         Ok(())
     }
