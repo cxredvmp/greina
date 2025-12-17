@@ -1,5 +1,3 @@
-use libc::c_int;
-
 use crate::block::{Block, BlockAddr};
 
 pub mod file;
@@ -16,4 +14,4 @@ pub trait Storage {
     fn block_count(&mut self) -> Result<u64>;
 }
 
-pub type Result<T> = core::result::Result<T, c_int>;
+pub type Result<T> = core::result::Result<T, libc::c_int>;

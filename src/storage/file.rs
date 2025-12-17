@@ -4,8 +4,6 @@ use std::{
     os::unix::fs::FileExt,
 };
 
-use libc::EIO;
-
 use crate::{
     block::{BLOCK_SIZE, Block, BlockAddr},
     storage::{Result, Storage},
@@ -50,7 +48,7 @@ impl Storage for FileStorage {
             .into_errno()
             .and_then(|b| {
                 if b != BLOCK_SIZE as usize {
-                    Err(EIO)
+                    Err(libc::EIO)
                 } else {
                     Ok(())
                 }
@@ -63,7 +61,7 @@ impl Storage for FileStorage {
             .into_errno()
             .and_then(|b| {
                 if b != BLOCK_SIZE as usize {
-                    Err(EIO)
+                    Err(libc::EIO)
                 } else {
                     Ok(())
                 }
@@ -88,7 +86,7 @@ impl<T> IntoErrno for io::Result<T> {
     fn into_errno(self) -> Result<Self::T> {
         match self {
             Ok(v) => Ok(v),
-            Err(e) => Err(e.raw_os_error().unwrap_or(EIO)),
+            Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
         }
     }
 }
