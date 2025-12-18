@@ -28,7 +28,7 @@ pub struct Transaction<'a, S: Storage> {
 
 impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
-    pub fn new(fs: &'a mut Filesystem<S>) -> Self {
+    pub(super) fn new(fs: &'a mut Filesystem<S>) -> Self {
         let block_map = fs.block_map.clone();
         let node_map = fs.node_map.clone();
         Self {
@@ -40,7 +40,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     /// Commits the transaction to storage, consuming itself.
-    pub fn commit(mut self) -> Result<()> {
+    pub(super) fn commit(mut self) -> Result<()> {
         self.sync_maps()?;
         for (&addr, block) in self.changes.iter() {
             self.fs
@@ -109,10 +109,8 @@ impl<'a, S: Storage> Transaction<'a, S> {
         Ok(node)
     }
 
-    // Queues a write of the node to the node table.
+    /// Queues a write of the node to the node table.
     pub fn write_node(&mut self, node: &mut Node, node_ptr: NodePtr) -> Result<()> {
-        node.change_time = NodeTime::now();
-
         let addr = self
             .get_node_block_addr(node_ptr)
             .ok_or(Error::NodePtrOutOfBounds)?;
@@ -128,6 +126,13 @@ impl<'a, S: Storage> Transaction<'a, S> {
         self.write_block_at(&block, addr);
 
         Ok(())
+    }
+
+    /// Queses a change of the node in the node table.
+    /// Same effect as `write_node`, but also updates `node.change_time` on success.
+    pub fn change_node(&mut self, node: &mut Node, node_ptr: NodePtr) -> Result<()> {
+        node.change_time = NodeTime::now();
+        self.write_node(node, node_ptr)
     }
 
     /// Allocates a node, returning it and its pointer.
@@ -250,7 +255,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         node.mod_time = NodeTime::now();
-        self.write_node(&mut node, node_ptr)?;
+        self.change_node(&mut node, node_ptr)?;
 
         Ok(bytes_written)
     }
@@ -291,6 +296,10 @@ impl<'a, S: Storage> Transaction<'a, S> {
             _ => return Err(Error::NotFile),
         }
 
+        if size == node.size {
+            return Ok(());
+        }
+
         let spans = node.truncate(size);
         for span in spans {
             // Free the blocks, if shrinked
@@ -298,7 +307,8 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         node.mod_time = NodeTime::now();
-        self.write_node(&mut node, node_ptr)?;
+        self.change_node(&mut node, node_ptr)?;
+
         Ok(())
     }
 
@@ -443,7 +453,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         parent.add_entry(entry)?;
         node.links += 1;
 
-        self.write_node(&mut node, node_ptr)?;
+        self.change_node(&mut node, node_ptr)?;
         self.write_dir(parent_ptr, &parent)?;
 
         Ok(())
@@ -468,7 +478,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         if node.links == 0 && free {
             self.remove_node(node_ptr)?;
         } else {
-            self.write_node(&mut node, node_ptr)?;
+            self.change_node(&mut node, node_ptr)?;
         }
 
         Ok(())
@@ -491,7 +501,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         &mut self,
         parent_ptr: NodePtr,
         name: &str,
-        target: &Path,
+        target: &str,
         uid: u32,
         gid: u32,
     ) -> Result<NodePtr> {

@@ -214,7 +214,7 @@ impl Node {
 
     /// Truncates the file's size to `size`.
     /// Optionally, returns addresses of discarded blocks as a list of spans.
-    pub fn truncate(&mut self, size: u64) -> Vec<(u64, u64)> {
+    pub(super) fn truncate(&mut self, size: u64) -> Vec<(u64, u64)> {
         let mut discarded = Vec::new();
 
         if size >= self.size {
@@ -258,7 +258,7 @@ impl Node {
     }
 
     /// Returns the number of blocks belonging to the node.
-    pub fn count_blocks(&self) -> u64 {
+    pub fn blocks(&self) -> u64 {
         self.extents
             .iter()
             .filter(|e| !e.is_null() && !e.is_hole())

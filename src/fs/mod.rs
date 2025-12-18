@@ -1,4 +1,3 @@
-use libc::EINVAL;
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
 use crate::{
@@ -97,7 +96,7 @@ impl<S: Storage> Filesystem<S> {
 
         // Verify signature
         if superblock.signature != *superblock::SIGNATURE {
-            return Err(EINVAL);
+            return Err(libc::EINVAL);
         }
 
         // Read the block allocation map
@@ -139,5 +138,30 @@ impl<S: Storage> Filesystem<S> {
         let flags = <[AllocFlag]>::try_ref_from_bytes(bytes)
             .expect("'bytes' must be a valid '<[AllocFlag]>'");
         Ok(AllocMap::from_slice(&flags[..count as usize]))
+    }
+
+    /// Executes a given closure within the context of a transaction.
+    /// If the closure returns `Ok`, the transaction is commited to storage.
+    /// Else if `Err` is returned, the transaction is discarded and no changes are made.
+    pub fn tx<F, T>(&mut self, f: F) -> transaction::Result<T>
+    where
+        F: FnOnce(&mut Transaction<S>) -> transaction::Result<T>,
+    {
+        let mut tx = Transaction::new(self);
+        let res = f(&mut tx)?;
+        tx.commit()?;
+        Ok(res)
+    }
+
+    pub fn superblock(&self) -> &Superblock {
+        &self.superblock
+    }
+
+    pub fn node_map(&self) -> &AllocMap {
+        &self.node_map
+    }
+
+    pub fn block_map(&self) -> &AllocMap {
+        &self.block_map
     }
 }

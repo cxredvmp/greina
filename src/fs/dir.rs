@@ -124,7 +124,7 @@ impl DirEntry {
 }
 
 /// How long a directory entry name can be.
-const NAME_MAX: usize = 64;
+pub const NAME_MAX: usize = 64;
 
 /// Represents the name of a directory entry.
 #[repr(C)]
