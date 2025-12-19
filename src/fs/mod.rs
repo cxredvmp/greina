@@ -68,7 +68,7 @@ impl<S: Storage> Filesystem<S> {
 
             // Initialize the root directory
             let (_, root_id) = tx
-                .create_node(FileType::Dir, 0o755u16, 0, 0)
+                .create_node(FileType::Dir, 0o777u16, 0, 0)
                 .expect("Must be able to create the root node");
             assert!(root_id == NodePtr::root());
             let root = Dir::new(root_id, root_id);
@@ -91,7 +91,7 @@ impl<S: Storage> Filesystem<S> {
         storage
             .read_block_at(&mut block, 0)
             .expect("Must be able to read the superblock");
-        let superblock = Superblock::read_from_bytes(&block.data)
+        let superblock = Superblock::read_from_bytes(&block.data[..size_of::<Superblock>()])
             .expect("'block.data' must be a valid 'Superblock'");
 
         // Verify signature
