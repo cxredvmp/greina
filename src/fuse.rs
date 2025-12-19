@@ -180,15 +180,6 @@ impl<S: Storage> Filesystem for Fuse<S> {
             None => return reply.error(libc::EILSEQ),
         };
 
-        let file_type = match node::FileType::try_from(mode) {
-            Ok(ft) => ft,
-            Err(e) => return reply.error(e),
-        };
-        match file_type {
-            node::FileType::Dir => (),
-            _ => return reply.error(libc::EINVAL),
-        }
-
         let perms = ((mode & PERMS) & !umask) as u16;
 
         let res = self.fs.tx(|tx| {
