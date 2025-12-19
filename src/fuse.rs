@@ -22,6 +22,12 @@ pub struct Fuse<S: Storage> {
     fs: fs::Filesystem<S>,
 }
 
+impl<S: Storage> Fuse<S> {
+    pub fn new(fs: fs::Filesystem<S>) -> Self {
+        Self { fs }
+    }
+}
+
 impl<S: Storage> Filesystem for Fuse<S> {
     fn init(
         &mut self,
