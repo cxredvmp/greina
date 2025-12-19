@@ -12,7 +12,10 @@ use crate::{
     storage::Storage,
 };
 
+/// How long the kernel should cache node attributes
 const TTL: Duration = Duration::from_secs(1);
+
+/// Bitmask for extracting file permissions from file mode
 const PERMS: u32 = 0o7777;
 
 pub struct Fuse<S: Storage> {
