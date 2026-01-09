@@ -112,10 +112,10 @@ impl Node {
 
     /// Resolves `block offset` within the file into a block address.
     pub fn get_block_addr(&self, mut block_offset: u64) -> Option<BlockAddr> {
-        for extent in self.extents.iter().take_while(|e| !e.is_null()) {
+        for extent in self.extents.iter().take_while(|e| !e.is_empty()) {
             let extent_len = extent.len();
             if extent_len > block_offset {
-                return if extent.is_hole() {
+                return if extent.is_sparse() {
                     None
                 } else {
                     Some(extent.start + block_offset)
@@ -131,12 +131,12 @@ impl Node {
     pub fn map_block(&mut self, mut block_offset: u64, addr: BlockAddr) -> Result<()> {
         assert!(addr != 0);
         for curr in 0..self.extents.len() {
-            if self.extents[curr].is_null() {
+            if self.extents[curr].is_empty() {
                 // All allocated extents were passed or there was none
                 if curr > 0 {
                     // There is a previous extent
                     let prev = curr - 1;
-                    let is_hole = self.extents[prev].is_hole();
+                    let is_hole = self.extents[prev].is_sparse();
                     let contiguous = block_offset == 0 && self.extents[prev].end == addr;
                     if !is_hole && contiguous {
                         // Can merge with the previous extent
@@ -163,7 +163,7 @@ impl Node {
             let blocks_in_curr = self.extents[curr].len();
             if block_offset < blocks_in_curr {
                 // Block resides inside this extent
-                let is_hole = self.extents[curr].is_hole();
+                let is_hole = self.extents[curr].is_sparse();
                 if !is_hole {
                     return Err(Error::AlreadyMapped);
                 }
@@ -176,9 +176,9 @@ impl Node {
                 exts[2].end = blocks_in_curr - block_offset - 1; // Right hole
                 // Remove empty hole, if there is one
                 // (i.e. the first/last block of the hole is mapped)
-                let exts: Vec<Extent> = exts.into_iter().filter(|e| !e.is_null()).collect();
+                let exts: Vec<Extent> = exts.into_iter().filter(|e| !e.is_empty()).collect();
                 let extra = exts.len() - 1; // How many new extents need to be inserted
-                let last = self.extents.iter().rposition(|e| !e.is_null()).unwrap();
+                let last = self.extents.iter().rposition(|e| !e.is_empty()).unwrap();
                 if last + extra > (self.extents.len() - 1) {
                     // No room for extent insertion
                     return Err(Error::OutOfExtents);
@@ -198,12 +198,12 @@ impl Node {
     pub fn append_hole(&mut self, count: u64) -> Result<()> {
         assert!(count != 0);
         for i in 0..self.extents.len() {
-            if self.extents[i].is_null() {
+            if self.extents[i].is_empty() {
                 // Check if can be merged with the previous extent
                 if i > 0 {
                     let prev_idx = i - 1;
                     let prev = self.extents[prev_idx];
-                    if prev.is_hole() {
+                    if prev.is_sparse() {
                         self.extents[prev_idx].end += count;
                         return Ok(());
                     }
@@ -232,7 +232,7 @@ impl Node {
         let mut passed = 0;
 
         for extent in &mut self.extents {
-            if extent.is_null() {
+            if extent.is_empty() {
                 break;
             }
 
@@ -240,15 +240,15 @@ impl Node {
 
             if passed >= keep {
                 // Extent is entirely not needed
-                if !extent.is_hole() {
+                if !extent.is_sparse() {
                     discarded.push(extent.span());
                 }
-                extent.nullify();
+                extent.clear();
             } else if passed + len > keep {
                 // Extent is partially needed
                 let new_len = keep - passed;
                 let new_end = extent.start + new_len;
-                if !extent.is_hole() {
+                if !extent.is_sparse() {
                     discarded.push((new_end, extent.end));
                 }
                 extent.end = new_end;
@@ -264,7 +264,7 @@ impl Node {
     pub fn blocks(&self) -> u64 {
         self.extents
             .iter()
-            .filter(|e| !e.is_null() && !e.is_hole())
+            .filter(|e| !e.is_empty() && !e.is_sparse())
             .map(|e| e.len())
             .sum()
     }
