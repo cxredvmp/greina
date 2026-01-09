@@ -41,7 +41,7 @@ fn main() {
             eprintln!(
                 "mount.greina: failed to open device {}: {}",
                 &storage_path,
-                std::io::Error::from_raw_os_error(e.into())
+                std::io::Error::from_raw_os_error(e)
             );
             std::process::exit(1);
         }
@@ -53,7 +53,7 @@ fn main() {
             eprintln!(
                 "mount.greina: failed to read filesystem from device {}: {}",
                 &storage_path,
-                std::io::Error::from_raw_os_error(e.into())
+                std::io::Error::from_raw_os_error(e)
             );
             std::process::exit(1);
         }
