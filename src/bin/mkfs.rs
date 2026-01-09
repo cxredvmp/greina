@@ -33,7 +33,7 @@ fn main() {
             eprintln!(
                 "mkfs.greina: failed to open device {}: {}",
                 storage_path,
-                std::io::Error::from_raw_os_error(e.into())
+                std::io::Error::from_raw_os_error(e)
             );
             std::process::exit(1);
         }
