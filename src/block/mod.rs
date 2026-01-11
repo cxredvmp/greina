@@ -1,3 +1,4 @@
+pub mod allocator;
 pub mod storage;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes};
