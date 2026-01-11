@@ -1,3 +1,5 @@
+pub mod bitmap;
+
 use crate::block::BlockAddr;
 
 /// An implementation of `Allocator` can manage block allocation.
