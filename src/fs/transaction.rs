@@ -3,14 +3,16 @@ use std::collections::BTreeMap;
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
 use crate::{
-    block::{BLOCK_SIZE, Block, BlockAddr},
+    block::{
+        BLOCK_SIZE, Block, BlockAddr,
+        storage::{self, Storage},
+    },
     fs::{
         Filesystem,
         alloc_map::{self, AllocMap},
         dir::{self, Dir, DirEntry, DirEntryName},
         node::{self, FileType, NODE_SIZE, Node, NodePtr, NodeTime},
     },
-    storage::{self, Storage},
 };
 
 /// Cache to buffer changes.
@@ -44,7 +46,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         for (&addr, block) in self.changes.iter() {
             self.fs
                 .storage
-                .write_block_at(block, addr)
+                .write_at(block, addr)
                 .into_transaction_res()?
         }
         Ok(())
@@ -64,7 +66,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
                 let addr = map_start + i as u64;
                 self.fs
                     .storage
-                    .write_block_at(&block, addr)
+                    .write_at(&block, addr)
                     .into_transaction_res()?;
             }
         }
@@ -78,7 +80,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             None => self
                 .fs
                 .storage
-                .read_block_at(block, addr)
+                .read_at(block, addr)
                 .into_transaction_res()?,
         }
         Ok(())

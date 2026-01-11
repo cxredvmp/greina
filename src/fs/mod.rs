@@ -1,7 +1,10 @@
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
 use crate::{
-    block::{Block, BlockAddr},
+    block::{
+        Block, BlockAddr,
+        storage::{self, Storage},
+    },
     fs::{
         alloc_map::{AllocFlag, AllocMap},
         dir::Dir,
@@ -9,7 +12,6 @@ use crate::{
         superblock::Superblock,
         transaction::{IntoTransactionResult, Transaction},
     },
-    storage::{self, Storage},
 };
 
 pub mod alloc_map;
@@ -33,7 +35,7 @@ impl<S: Storage> Filesystem<S> {
     /// # Panics
     /// ...
     pub fn create(mut storage: S, node_count: u64) -> transaction::Result<Self> {
-        let block_count = storage.block_count().into_transaction_res()?;
+        let block_count = storage.capacity().into_transaction_res()?;
 
         // Superblock
         let superblock = Superblock::new(block_count, node_count);
@@ -89,7 +91,7 @@ impl<S: Storage> Filesystem<S> {
         // Read the superblock
         let mut block = Block::default();
         storage
-            .read_block_at(&mut block, 0)
+            .read_at(&mut block, 0)
             .expect("Must be able to read the superblock");
         let superblock = Superblock::read_from_bytes(&block.data[..size_of::<Superblock>()])
             .expect("'block.data' must be a valid 'Superblock'");
@@ -132,7 +134,7 @@ impl<S: Storage> Filesystem<S> {
         let addrs: Vec<BlockAddr> = (map_start..map_end).collect();
         let mut blocks = vec![Block::default(); addrs.len()];
         for (i, &addr) in addrs.iter().enumerate() {
-            storage.read_block_at(&mut blocks[i], addr)?
+            storage.read_at(&mut blocks[i], addr)?
         }
         let bytes = blocks.as_bytes();
         let flags = <[AllocFlag]>::try_ref_from_bytes(bytes)

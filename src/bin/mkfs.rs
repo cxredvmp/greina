@@ -1,6 +1,6 @@
 use greina::{
+    block::storage::{Storage, file::FileStorage},
     fs::Filesystem,
-    storage::{Storage, file::FileStorage},
 };
 
 fn usage() -> ! {
@@ -39,13 +39,13 @@ fn main() {
         }
     };
 
-    let blocks = storage
-        .block_count()
+    let block_count = storage
+        .capacity()
         .expect("must be able to count the number of blocks");
     // 1 node per 4 blocks = 512 bytes / 16384 bytes = 3,125 % of space for nodes
-    let nodes = blocks / 4;
+    let node_count = block_count / 4;
 
-    match Filesystem::create(storage, nodes) {
+    match Filesystem::create(storage, node_count) {
         Ok(fs) => {
             eprintln!(
                 "mkfs.greina: created filesystem on {} with {} blocks and {} nodes",

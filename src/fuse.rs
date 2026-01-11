@@ -3,13 +3,12 @@ use std::time::{Duration, SystemTime};
 use fuser::{FileAttr, FileType, Filesystem};
 
 use crate::{
-    block::BLOCK_SIZE,
+    block::{BLOCK_SIZE, storage::Storage},
     fs::{
         self,
         dir::NAME_MAX,
         node::{self, Node, NodePtr, NodeTime},
     },
-    storage::Storage,
 };
 
 /// How long the kernel should cache node attributes

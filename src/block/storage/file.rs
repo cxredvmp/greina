@@ -1,15 +1,15 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Seek},
+    io::{Seek, SeekFrom},
     os::unix::fs::FileExt,
 };
 
-use crate::{
-    block::{BLOCK_SIZE, Block, BlockAddr},
+use crate::block::{
+    BLOCK_SIZE, Block, BlockAddr,
     storage::{Result, Storage},
 };
 
-/// Storage that uses a file to store data.
+/// A file-backed `Storage`.
 pub struct FileStorage {
     file: File,
 }
@@ -42,7 +42,7 @@ impl FileStorage {
 }
 
 impl Storage for FileStorage {
-    fn read_block_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
+    fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
         self.file
             .read_at(&mut block.data, addr * BLOCK_SIZE)
             .into_errno()
@@ -55,7 +55,7 @@ impl Storage for FileStorage {
             })
     }
 
-    fn write_block_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
+    fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
         self.file
             .write_at(&block.data, addr * BLOCK_SIZE)
             .into_errno()
@@ -68,8 +68,8 @@ impl Storage for FileStorage {
             })
     }
 
-    fn block_count(&mut self) -> Result<u64> {
-        let size = self.file.seek(io::SeekFrom::End(0)).into_errno()?;
+    fn capacity(&mut self) -> Result<u64> {
+        let size = self.file.seek(SeekFrom::End(0)).into_errno()?;
         Ok(size / BLOCK_SIZE)
     }
 }
@@ -80,7 +80,7 @@ trait IntoErrno {
     fn into_errno(self) -> Result<Self::T>;
 }
 
-impl<T> IntoErrno for io::Result<T> {
+impl<T> IntoErrno for std::io::Result<T> {
     type T = T;
 
     fn into_errno(self) -> Result<Self::T> {

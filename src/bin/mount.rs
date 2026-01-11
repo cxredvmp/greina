@@ -1,5 +1,5 @@
 use fuser::{MountOption, spawn_mount2};
-use greina::{fs::Filesystem, fuse::Fuse, storage::file::FileStorage};
+use greina::{block::storage::file::FileStorage, fs::Filesystem, fuse::Fuse};
 
 fn usage() -> ! {
     eprintln!("mount.greina device mountpoint");

@@ -1,3 +1,5 @@
+pub mod storage;
+
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 /// Address of a block.
