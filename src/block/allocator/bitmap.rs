@@ -17,8 +17,8 @@ pub struct BitmapAllocator {
 
 impl BitmapAllocator {
     /// Constructs a bitmap for `count` blocks.
-    pub fn new(count: u64) -> Self {
-        let count = usize::try_from(count).expect("'count' must be addressable");
+    pub fn new(block_count: u64) -> Self {
+        let count = usize::try_from(block_count).expect("'count' must be addressable");
         let bits = bitbox![u64, Lsb0; 0; count];
         BitmapAllocator {
             count,
@@ -48,9 +48,7 @@ impl BitmapAllocator {
     /// Attempts to find a contiguous span of `count` free blocks.
     /// Returns the starting address of the span.
     fn find_free(&self, count: usize) -> Option<usize> {
-        if count == 0 {
-            return None;
-        }
+        assert!(count != 0, "cannot allocate zero blocks");
 
         let mut start = self.last_cursor;
         let before_last = 0..self.last_cursor;
@@ -109,5 +107,35 @@ impl Allocator for BitmapAllocator {
 
     fn available(&self) -> u64 {
         self.available as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{block::allocator::tests::TestableAllocator, test_allocator};
+
+    use super::*;
+
+    impl TestableAllocator for BitmapAllocator {
+        fn new_for_test(block_count: u64) -> Self {
+            Self::new(block_count)
+        }
+    }
+
+    test_allocator!(BitmapAllocator);
+
+    #[test]
+    fn test_serde() {
+        let mut original = BitmapAllocator::new(16);
+
+        let addr_1 = original.allocate(8).unwrap();
+        let addr_2 = original.allocate(8).unwrap();
+
+        let mut restored = BitmapAllocator::from_bytes(16, original.as_bytes());
+
+        assert_eq!(restored.available(), original.available());
+
+        restored.deallocate(addr_1, 8).unwrap();
+        restored.deallocate(addr_2, 8).unwrap();
     }
 }
