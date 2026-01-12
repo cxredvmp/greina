@@ -45,7 +45,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
         let name = match name.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -69,7 +69,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _fh: Option<u64>,
         reply: fuser::ReplyAttr,
     ) {
-        let node_ptr = NodePtr::new(ino);
+        let node_ptr = NodePtr(ino);
         let res = self.fs.tx(|tx| tx.read_node(node_ptr));
         match res {
             Ok(node) => reply.attr(&TTL, &node_attr(node_ptr, &node)),
@@ -95,7 +95,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _flags: Option<u32>,
         reply: fuser::ReplyAttr,
     ) {
-        let node_ptr = NodePtr::new(ino);
+        let node_ptr = NodePtr(ino);
         let res = self.fs.tx(|tx| {
             if let Some(size) = size {
                 tx.truncate_file(node_ptr, size)?;
@@ -172,7 +172,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         umask: u32,
         reply: fuser::ReplyEntry,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
 
         let name = match name.to_str() {
             Some(name) => name,
@@ -200,7 +200,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEmpty,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
         let name = match name.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -220,7 +220,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         target: &std::path::Path,
         reply: fuser::ReplyEntry,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
         let name = match link_name.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -243,7 +243,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
     }
 
     fn readlink(&mut self, _req: &fuser::Request<'_>, ino: u64, reply: fuser::ReplyData) {
-        let symlink_ptr = NodePtr::new(ino);
+        let symlink_ptr = NodePtr(ino);
         let res = self.fs.tx(|tx| tx.read_symlink(symlink_ptr));
         match res {
             Ok(path) => reply.data(&path),
@@ -259,8 +259,8 @@ impl<S: Storage> Filesystem for Fuse<S> {
         newname: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        let node_ptr = NodePtr::new(ino);
-        let parent_ptr = NodePtr::new(newparent);
+        let node_ptr = NodePtr(ino);
+        let parent_ptr = NodePtr(newparent);
         let name = match newname.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -285,7 +285,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         name: &std::ffi::OsStr,
         reply: fuser::ReplyEmpty,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
         let name = match name.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -307,13 +307,13 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _flags: u32,
         reply: fuser::ReplyEmpty,
     ) {
-        let old_parent_ptr = NodePtr::new(parent);
+        let old_parent_ptr = NodePtr(parent);
         let old_name = match name.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
         };
 
-        let new_parent_ptr = NodePtr::new(newparent);
+        let new_parent_ptr = NodePtr(newparent);
         let new_name = match newname.to_str() {
             Some(name) => name,
             None => return reply.error(libc::EILSEQ),
@@ -339,7 +339,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _flags: i32,
         reply: fuser::ReplyCreate,
     ) {
-        let parent_ptr = NodePtr::new(parent);
+        let parent_ptr = NodePtr(parent);
 
         let name = match name.to_str() {
             Some(name) => name,
@@ -381,7 +381,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyData,
     ) {
-        let node_ptr = NodePtr::new(ino);
+        let node_ptr = NodePtr(ino);
         let mut buf = vec![0u8; size as usize];
         let res = self
             .fs
@@ -404,7 +404,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         _lock_owner: Option<u64>,
         reply: fuser::ReplyWrite,
     ) {
-        let node_ptr = NodePtr::new(ino);
+        let node_ptr = NodePtr(ino);
         let res = self
             .fs
             .tx(|tx| tx.write_file_at(node_ptr, offset as u64, data));
@@ -422,7 +422,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
         offset: i64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        let node_ptr = NodePtr::new(ino);
+        let node_ptr = NodePtr(ino);
         let res = self.fs.tx(|tx| tx.read_dir(node_ptr));
         match res {
             Ok(dir) => {
@@ -435,7 +435,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
                         Err(e) => return reply.error(e.into()),
                     };
                     let is_full = reply.add(
-                        entry.node_ptr.id(),
+                        entry.node_ptr.0,
                         (i + 1) as i64,
                         entry.file_type.into(),
                         name,
@@ -473,7 +473,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
 
 fn node_attr(node_ptr: NodePtr, node: &Node) -> FileAttr {
     FileAttr {
-        ino: node_ptr.id(),
+        ino: node_ptr.0,
         size: node.size,
         blocks: node.blocks(),
         atime: SystemTime::from(node.access_time),

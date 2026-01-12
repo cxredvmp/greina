@@ -146,7 +146,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     ) -> Result<(Node, NodePtr)> {
         let mut node = Node::new(file_type, perms, uid, gid);
         let (id, _) = self.node_map.allocate(1)?;
-        let node_ptr = NodePtr::new(id);
+        let node_ptr = NodePtr(id);
         self.write_node(&mut node, node_ptr)?;
         Ok((node, node_ptr))
     }
@@ -162,7 +162,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         // Free the node
-        let id = node_ptr.id();
+        let id = node_ptr.0;
         self.node_map.free_at(id)?;
 
         let mut node = Node::default();
@@ -446,12 +446,11 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Checks if `ancestor_ptr` is an ancestor directory of `dir_ptr` directory.
     /// Ancestry is reflexive, i.e. a directory is its own ancestor.
     fn is_ancestor_dir(&mut self, ancestor_ptr: NodePtr, dir_ptr: NodePtr) -> Result<bool> {
-        let root = NodePtr::root();
         let mut curr_parent_ptr = dir_ptr;
         loop {
             if curr_parent_ptr == ancestor_ptr {
                 return Ok(true);
-            } else if curr_parent_ptr == root {
+            } else if curr_parent_ptr == NodePtr::ROOT {
                 return Ok(false);
             }
             let parent = self.read_dir(curr_parent_ptr)?;
@@ -532,7 +531,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Returns the address of the block in which the node resides.
     fn get_node_block_addr(&self, node_ptr: NodePtr) -> Option<BlockAddr> {
-        let id = node_ptr.id();
+        let id = node_ptr.0;
         if id < self.fs.superblock.node_count {
             Some(self.fs.superblock.node_table_start + (id * NODE_SIZE as u64 / BLOCK_SIZE))
         } else {
@@ -542,7 +541,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Returns the byte offset of the node within the block.
     fn get_node_offset(&self, node_ptr: NodePtr) -> Option<u64> {
-        let id = node_ptr.id();
+        let id = node_ptr.0;
         if id < self.fs.superblock.node_count {
             const NODES_PER_BLOCK: u64 = BLOCK_SIZE / NODE_SIZE as u64;
             Some(id % NODES_PER_BLOCK * NODE_SIZE as u64)

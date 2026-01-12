@@ -72,7 +72,7 @@ impl<S: Storage> Filesystem<S> {
             let (_, root_id) = tx
                 .create_node(FileType::Dir, 0o777u16, 0, 0)
                 .expect("Must be able to create the root node");
-            assert!(root_id == NodePtr::root());
+            assert!(root_id == NodePtr::ROOT);
             let root = Dir::new(root_id, root_id);
             tx.write_dir(root_id, &root)
                 .expect("Must be able to write the root directory");

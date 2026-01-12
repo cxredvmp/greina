@@ -11,39 +11,26 @@ use crate::{
 #[repr(C)]
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 #[derive(FromBytes, IntoBytes, Immutable)]
-pub struct NodePtr {
-    id: u64,
-}
+pub struct NodePtr(pub u64);
 
 impl NodePtr {
-    /// Constructs a pointer to the rood node.
-    pub fn root() -> Self {
-        Self { id: 1 }
-    }
+    /// A null node pointer.
+    pub const NULL: Self = Self(0);
 
-    /// Constructs a pointer from a node id.
-    pub fn new(id: u64) -> Self {
-        Self { id }
-    }
-
-    /// Returns the id of the node.
-    pub fn id(&self) -> u64 {
-        self.id
-    }
+    /// A pointer to the rood node.
+    pub const ROOT: Self = Self(1);
 
     /// Checks if the pointer doesn't point to any node.
     pub fn is_null(&self) -> bool {
-        self.id == 0
+        *self == Self::NULL
     }
 }
 
-/// Node's size.
 pub const NODE_SIZE: usize = size_of::<Node>();
 
-/// How many extents a node can have.
 const MAX_EXTENTS: usize = 26;
 
-/// Represents a file system object.
+/// A file system object.
 #[repr(C)]
 #[derive(Clone, Copy)]
 #[derive(TryFromBytes, IntoBytes, Immutable)]
