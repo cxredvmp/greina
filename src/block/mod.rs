@@ -1,10 +1,28 @@
 pub mod allocator;
 pub mod storage;
 
-use zerocopy::{FromBytes, Immutable, IntoBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned, little_endian::U64};
 
-/// Address of a block.
+/// An address of a block.
 pub type BlockAddr = u64;
+
+impl From<BlockAddrStored> for BlockAddr {
+    fn from(addr: BlockAddrStored) -> Self {
+        addr.0.get()
+    }
+}
+
+/// A stored address of a block.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(FromBytes, IntoBytes, Immutable, Unaligned)]
+pub struct BlockAddrStored(U64);
+
+impl From<BlockAddr> for BlockAddrStored {
+    fn from(addr: BlockAddr) -> Self {
+        Self(U64::new(addr))
+    }
+}
 
 /// Block size in bytes.
 pub const BLOCK_SIZE: u64 = 4096;
