@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub mod set;
+
 pub mod bitmap;
 
 use crate::block::BlockAddr;
