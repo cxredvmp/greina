@@ -1,6 +1,9 @@
-use crate::block::{Block, BlockAddr};
+#[cfg(test)]
+pub mod map;
 
 pub mod file;
+
+use crate::block::{Block, BlockAddr};
 
 /// An implementation of `Storage` allows reading and writing blocks, as well as determining the
 /// block capacity.
