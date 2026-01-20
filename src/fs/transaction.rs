@@ -5,6 +5,7 @@ use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 use crate::{
     block::{
         BLOCK_SIZE, Block, BlockAddr,
+        allocator::{self, Allocator, bitmap::BitmapAllocator},
         storage::{self, Storage},
     },
     fs::{
@@ -22,7 +23,7 @@ type Changes = BTreeMap<BlockAddr, Block>;
 pub struct Transaction<'a, S: Storage> {
     fs: &'a mut Filesystem<S>,
     // TODO: Replace full clones with caching changes only
-    block_map: AllocMap,
+    allocator: BitmapAllocator,
     node_map: AllocMap,
     changes: Changes,
 }
@@ -30,11 +31,11 @@ pub struct Transaction<'a, S: Storage> {
 impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
     pub(super) fn new(fs: &'a mut Filesystem<S>) -> Self {
-        let block_map = fs.block_map.clone();
+        let allocator = fs.allocator.clone();
         let node_map = fs.node_map.clone();
         Self {
             fs,
-            block_map,
+            allocator,
             node_map,
             changes: Changes::new(),
         }
@@ -42,7 +43,12 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
     /// Commits the transaction to storage, consuming itself.
     pub(super) fn commit(mut self) -> Result<()> {
-        self.sync_maps()?;
+        // Sync allocator
+        self.sync_allocator()?;
+
+        // Sync node allocator
+        self.sync_node_map()?;
+
         for (&addr, block) in self.changes.iter() {
             self.fs
                 .storage
@@ -52,24 +58,55 @@ impl<'a, S: Storage> Transaction<'a, S> {
         Ok(())
     }
 
-    /// Queues a synchronization of allocation maps.
-    fn sync_maps(&mut self) -> Result<()> {
-        self.fs.block_map = self.block_map.clone();
-        self.fs.node_map = self.node_map.clone();
-        for (map, map_start) in [
-            (&self.fs.block_map, self.fs.superblock.block_map_start),
-            (&self.fs.node_map, self.fs.superblock.node_map_start),
-        ] {
-            let bytes = map.as_slice().as_bytes();
-            for (i, chunk) in bytes.chunks(BLOCK_SIZE as usize).enumerate() {
-                let block = Block::read_from_bytes(chunk).unwrap_or_else(|_| Block::new(chunk));
-                let addr = map_start + i as u64;
-                self.fs
-                    .storage
-                    .write_at(&block, addr)
-                    .into_transaction_res()?;
-            }
+    fn sync_allocator(&mut self) -> Result<()> {
+        let mut addr = self.fs.superblock.allocator_start;
+        let bytes = self.allocator.as_bytes();
+        let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
+
+        for chunk in chunks {
+            let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
+            self.fs
+                .storage
+                .write_at(block, addr)
+                .into_transaction_res()?;
+            addr += 1;
         }
+
+        if !remainder.is_empty() {
+            let block = Block::new(remainder);
+            self.fs
+                .storage
+                .write_at(&block, addr)
+                .into_transaction_res()?;
+        }
+
+        self.fs.allocator = self.allocator.clone();
+        Ok(())
+    }
+
+    /// Queues a synchronization of allocation maps.
+    fn sync_node_map(&mut self) -> Result<()> {
+        let mut addr = self.fs.superblock.node_map_start;
+        let bytes = self.node_map.as_slice().as_bytes();
+        let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
+
+        for chunk in chunks {
+            let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
+            self.fs
+                .storage
+                .write_at(block, addr)
+                .into_transaction_res()?;
+            addr += 1;
+        }
+
+        if !remainder.is_empty() {
+            let block = Block::new(remainder);
+            self.fs
+                .storage
+                .write_at(&block, addr)
+                .into_transaction_res()?;
+        }
+        self.fs.node_map = self.node_map.clone();
         Ok(())
     }
 
@@ -156,9 +193,9 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let mut node = self.read_node(node_ptr)?;
 
         let spans = node.truncate(0);
-        for span in spans {
-            // Free the blocks
-            self.block_map.free_span(span)?;
+        // TODO: Change Extent to have start and len
+        for &(start, end) in spans.iter() {
+            self.allocator.deallocate(start, end - start)?;
         }
 
         // Free the node
@@ -228,7 +265,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
                 Some(addr) => (addr, false),
                 None => {
                     // Allocate a block
-                    let (addr, _) = self.block_map.allocate(1)?;
+                    let addr = self.allocator.allocate(1)?;
                     node.map_block(block_offset, addr)?;
                     (addr, true)
                 }
@@ -302,9 +339,9 @@ impl<'a, S: Storage> Transaction<'a, S> {
         }
 
         let spans = node.truncate(size);
-        for span in spans {
-            // Free the blocks, if shrinked
-            self.block_map.free_span(span)?;
+        // TODO: Change Extent to have start and len
+        for &(start, end) in spans.iter() {
+            self.allocator.deallocate(start, end - start)?;
         }
 
         node.mod_time = NodeTime::now();
@@ -557,7 +594,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
     Storage(libc::c_int),
 
-    Alloc(alloc_map::Error),
+    Allocator(allocator::Error),
+    NodeMap(alloc_map::Error),
     Dir(dir::Error),
     Node(node::Error),
 
@@ -592,9 +630,15 @@ impl<T> IntoTransactionResult for storage::Result<T> {
     }
 }
 
+impl From<allocator::Error> for Error {
+    fn from(err: allocator::Error) -> Self {
+        Self::Allocator(err)
+    }
+}
+
 impl From<alloc_map::Error> for Error {
     fn from(err: alloc_map::Error) -> Self {
-        Self::Alloc(err)
+        Self::NodeMap(err)
     }
 }
 
@@ -615,7 +659,8 @@ impl From<Error> for libc::c_int {
         match err {
             Error::Storage(errno) => errno,
 
-            Error::Alloc(e) => e.into(),
+            Error::Allocator(e) => e.into(),
+            Error::NodeMap(e) => e.into(),
             Error::Dir(e) => e.into(),
             Error::Node(e) => e.into(),
 

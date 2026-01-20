@@ -2,7 +2,8 @@ use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
 use crate::{
     block::{
-        Block, BlockAddr,
+        BLOCK_SIZE, Block, BlockAddr,
+        allocator::{Allocator, bitmap::BitmapAllocator},
         storage::{self, Storage},
     },
     fs::{
@@ -25,7 +26,7 @@ pub mod transaction;
 pub struct Filesystem<S: Storage> {
     storage: S,
     superblock: Superblock,
-    block_map: AllocMap,
+    allocator: BitmapAllocator,
     node_map: AllocMap,
 }
 
@@ -41,24 +42,25 @@ impl<S: Storage> Filesystem<S> {
         let superblock = Superblock::new(block_count, node_count);
 
         // Allocation maps
-        let mut block_map = AllocMap::new(block_count);
+        let mut allocator = BitmapAllocator::new(block_count);
         let mut node_map = AllocMap::new(node_count);
 
         // Allocate metadata regions
-        block_map
-            .allocate_span((0, superblock.data_start))
-            .expect("'0..superblock.data_start' blocks must not be allocated");
+        let addr = allocator
+            .allocate(superblock.data_start)
+            .expect("metadata regions must be allocated");
+        assert_eq!(addr, 0, "metadata regions must start at address 0");
 
         // Allocate the null node
         node_map
             .allocate_at(0)
-            .expect("Null node must not be allocated");
+            .expect("null node must not be allocated");
 
         // Create filesystem
         let mut fs = Filesystem {
             storage,
             superblock,
-            block_map,
+            allocator,
             node_map,
         };
 
@@ -92,8 +94,8 @@ impl<S: Storage> Filesystem<S> {
         let mut block = Block::default();
         storage
             .read_at(&mut block, 0)
-            .expect("Must be able to read the superblock");
-        let superblock = Superblock::read_from_bytes(&block.data[..size_of::<Superblock>()])
+            .expect("must be able to read the superblock");
+        let (superblock, _) = Superblock::read_from_prefix(&block.data)
             .expect("'block.data' must be a valid 'Superblock'");
 
         // Verify signature
@@ -101,13 +103,8 @@ impl<S: Storage> Filesystem<S> {
             return Err(libc::EINVAL);
         }
 
-        // Read the block allocation map
-        let block_map = Self::read_map(
-            &mut storage,
-            superblock.block_map_start,
-            superblock.node_map_start,
-            superblock.block_count,
-        )?;
+        // Read the allocator
+        let allocator = Self::read_allocator(&mut storage, &superblock)?;
 
         // Read the node allocation map
         let node_map = Self::read_map(
@@ -120,9 +117,27 @@ impl<S: Storage> Filesystem<S> {
         Ok(Self {
             storage,
             superblock,
-            block_map,
+            allocator,
             node_map,
         })
+    }
+
+    fn read_allocator(
+        storage: &mut S,
+        superblock: &Superblock,
+    ) -> storage::Result<BitmapAllocator> {
+        let bytes_to_read = superblock.block_count.div_ceil(8);
+        let blocks_to_read = bytes_to_read.div_ceil(BLOCK_SIZE);
+
+        let mut blocks = vec![Block::default(); blocks_to_read as usize];
+        let mut addr = superblock.allocator_start;
+        for block in &mut blocks {
+            storage.read_at(block, addr)?;
+            addr += 1;
+        }
+
+        let allocator = BitmapAllocator::from_bytes(superblock.block_count, blocks.as_bytes());
+        Ok(allocator)
     }
 
     fn read_map(
@@ -163,7 +178,7 @@ impl<S: Storage> Filesystem<S> {
         &self.node_map
     }
 
-    pub fn block_map(&self) -> &AllocMap {
-        &self.block_map
+    pub fn allocator(&self) -> &BitmapAllocator {
+        &self.allocator
     }
 }

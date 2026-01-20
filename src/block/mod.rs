@@ -1,7 +1,7 @@
 pub mod allocator;
 pub mod storage;
 
-use zerocopy::{FromBytes, Immutable, IntoBytes, Unaligned, little_endian::U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, little_endian::U64};
 
 /// An address of a block.
 pub type BlockAddr = u64;
@@ -30,7 +30,7 @@ pub const BLOCK_SIZE: u64 = 4096;
 /// Fixed-sized byte sequence.
 #[repr(C)]
 #[derive(Clone, Copy)]
-#[derive(FromBytes, IntoBytes, Immutable)]
+#[derive(FromBytes, IntoBytes, Immutable, Unaligned, KnownLayout)]
 pub struct Block {
     pub data: [u8; BLOCK_SIZE as usize],
 }

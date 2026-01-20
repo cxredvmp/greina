@@ -28,11 +28,11 @@ impl BitmapAllocator {
         }
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         self.bits.as_raw_slice().as_bytes()
     }
 
-    fn from_bytes(count: u64, bytes: &[u8]) -> Self {
+    pub(crate) fn from_bytes(count: u64, bytes: &[u8]) -> Self {
         let count = usize::try_from(count).expect("'count' must be addressable");
         let slice = <[U64]>::ref_from_bytes(bytes).expect("'bytes' must be a valid bitmap");
         let bits: BitBox<u64> = slice.iter().map(|v| v.get()).collect();
