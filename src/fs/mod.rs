@@ -11,7 +11,7 @@ use crate::{
         dir::Dir,
         node::{FileType, NodePtr},
         superblock::Superblock,
-        transaction::{IntoTransactionResult, Transaction},
+        transaction::Transaction,
     },
 };
 
@@ -36,7 +36,7 @@ impl<S: Storage> Filesystem<S> {
     /// # Panics
     /// ...
     pub fn create(mut storage: S, node_count: u64) -> transaction::Result<Self> {
-        let block_count = storage.capacity().into_transaction_res()?;
+        let block_count = storage.capacity()?;
 
         // Superblock
         let superblock = Superblock::new(block_count, node_count);
@@ -67,10 +67,10 @@ impl<S: Storage> Filesystem<S> {
         {
             // Write superblock
             let superblock = Block::from(&fs.superblock);
-            let mut tx = Transaction::new(&mut fs);
-            tx.write_block_at(&superblock, superblock::SUPER_ADDR);
+            fs.storage.write_at(&superblock, superblock::SUPER_ADDR)?;
 
             // Initialize the root directory
+            let mut tx = Transaction::new(&mut fs);
             let (_, root_id) = tx
                 .create_node(FileType::Dir, 0o777u16, 0, 0)
                 .expect("Must be able to create the root node");
@@ -78,7 +78,6 @@ impl<S: Storage> Filesystem<S> {
             let root = Dir::new(root_id, root_id);
             tx.write_dir(root_id, &root)
                 .expect("Must be able to write the root directory");
-
             tx.commit()?;
         }
 

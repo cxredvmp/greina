@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+mod cached;
+use cached::*;
 
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
@@ -6,26 +7,26 @@ use crate::{
     block::{
         BLOCK_SIZE, Block, BlockAddr,
         allocator::{self, Allocator, bitmap::BitmapAllocator},
-        storage::{self, Storage},
+        storage::Storage,
     },
     fs::{
         Filesystem,
         alloc_map::{self, AllocMap},
         dir::{self, Dir, DirEntry, DirEntryName},
         node::{self, FileType, NODE_SIZE, Node, NodePtr, NodeTime},
+        superblock::Superblock,
     },
 };
 
-/// Cache to buffer changes.
-type Changes = BTreeMap<BlockAddr, Block>;
-
 /// Filesystem operation that buffers changes in memory before commiting them to persistent storage.
 pub struct Transaction<'a, S: Storage> {
-    fs: &'a mut Filesystem<S>,
+    superblock: &'a Superblock,
+    fs_allocator: &'a mut BitmapAllocator,
+    fs_node_map: &'a mut AllocMap,
     // TODO: Replace full clones with caching changes only
     allocator: BitmapAllocator,
     node_map: AllocMap,
-    changes: Changes,
+    storage: CachedStorage<'a, S>,
 }
 
 impl<'a, S: Storage> Transaction<'a, S> {
@@ -34,98 +35,62 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let allocator = fs.allocator.clone();
         let node_map = fs.node_map.clone();
         Self {
-            fs,
+            superblock: &fs.superblock,
+            fs_allocator: &mut fs.allocator,
+            fs_node_map: &mut fs.node_map,
             allocator,
             node_map,
-            changes: Changes::new(),
+            storage: CachedStorage::new(&mut fs.storage),
         }
     }
 
     /// Commits the transaction to storage, consuming itself.
     pub(super) fn commit(mut self) -> Result<()> {
-        // Sync allocator
         self.sync_allocator()?;
-
-        // Sync node allocator
         self.sync_node_map()?;
-
-        for (&addr, block) in self.changes.iter() {
-            self.fs
-                .storage
-                .write_at(block, addr)
-                .into_transaction_res()?
-        }
+        self.storage.sync()?;
         Ok(())
     }
 
     fn sync_allocator(&mut self) -> Result<()> {
-        let mut addr = self.fs.superblock.allocator_start;
+        let mut addr = self.superblock.allocator_start;
         let bytes = self.allocator.as_bytes();
         let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
 
         for chunk in chunks {
             let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
-            self.fs
-                .storage
-                .write_at(block, addr)
-                .into_transaction_res()?;
+            self.storage.write_at(block, addr)?;
             addr += 1;
         }
 
         if !remainder.is_empty() {
             let block = Block::new(remainder);
-            self.fs
-                .storage
-                .write_at(&block, addr)
-                .into_transaction_res()?;
+            self.storage.write_at(&block, addr)?;
         }
 
-        self.fs.allocator = self.allocator.clone();
+        *self.fs_allocator = self.allocator.clone();
         Ok(())
     }
 
     /// Queues a synchronization of allocation maps.
     fn sync_node_map(&mut self) -> Result<()> {
-        let mut addr = self.fs.superblock.node_map_start;
+        let mut addr = self.superblock.node_map_start;
         let bytes = self.node_map.as_slice().as_bytes();
         let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
 
         for chunk in chunks {
             let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
-            self.fs
-                .storage
-                .write_at(block, addr)
-                .into_transaction_res()?;
+            self.storage.write_at(block, addr)?;
             addr += 1;
         }
 
         if !remainder.is_empty() {
             let block = Block::new(remainder);
-            self.fs
-                .storage
-                .write_at(&block, addr)
-                .into_transaction_res()?;
+            self.storage.write_at(&block, addr)?;
         }
-        self.fs.node_map = self.node_map.clone();
-        Ok(())
-    }
 
-    /// Reads the block at `addr` into `block`, checking cached changes.
-    pub fn read_block_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
-        match self.changes.get(&addr) {
-            Some(cached) => block.data = cached.data,
-            None => self
-                .fs
-                .storage
-                .read_at(block, addr)
-                .into_transaction_res()?,
-        }
+        *self.fs_node_map = self.node_map.clone();
         Ok(())
-    }
-
-    /// Queues a write of `block` into the block at `addr`.
-    pub fn write_block_at(&mut self, block: &Block, addr: BlockAddr) {
-        self.changes.insert(addr, *block);
     }
 
     /// Reads the node from the node table.
@@ -135,7 +100,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             .ok_or(Error::NodePtrOutOfBounds)?;
 
         let mut block = Block::default();
-        self.read_block_at(&mut block, addr)?;
+        self.storage.read_at(&mut block, addr)?;
         let offset = self
             .get_node_offset(node_ptr)
             .ok_or(Error::NodePtrOutOfBounds)?;
@@ -154,14 +119,14 @@ impl<'a, S: Storage> Transaction<'a, S> {
             .ok_or(Error::NodePtrOutOfBounds)?;
 
         let mut block = Block::default();
-        self.read_block_at(&mut block, addr)?;
+        self.storage.read_at(&mut block, addr)?;
 
         let offset = self
             .get_node_offset(node_ptr)
             .ok_or(Error::NodePtrOutOfBounds)?;
         block.data[offset as usize..(offset as usize + NODE_SIZE)].copy_from_slice(node.as_bytes());
 
-        self.write_block_at(&block, addr);
+        self.storage.write_at(&block, addr)?;
 
         Ok(())
     }
@@ -228,7 +193,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             match node.get_block_addr_from_offset(curr_pos) {
                 Some(addr) => {
                     let mut block = Block::default();
-                    self.read_block_at(&mut block, addr)?;
+                    self.storage.read_at(&mut block, addr)?;
                     buf[bytes_read as usize..(bytes_read + chunk_size) as usize].copy_from_slice(
                         &block.data
                             [offset_in_block as usize..(offset_in_block + chunk_size) as usize],
@@ -274,7 +239,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             let mut block = Block::default();
             // Don't need to read if it's a freshly allocated block
             if !has_alloc {
-                self.read_block_at(&mut block, addr)?
+                self.storage.read_at(&mut block, addr)?
             };
 
             let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
@@ -283,7 +248,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
                     &buf[bytes_written as usize..(bytes_written + chunk_size) as usize],
                 );
 
-            self.write_block_at(&block, addr);
+            self.storage.write_at(&block, addr)?;
             bytes_written += chunk_size;
         }
 
@@ -569,8 +534,8 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Returns the address of the block in which the node resides.
     fn get_node_block_addr(&self, node_ptr: NodePtr) -> Option<BlockAddr> {
         let id = node_ptr.0;
-        if id < self.fs.superblock.node_count {
-            Some(self.fs.superblock.node_table_start + (id * NODE_SIZE as u64 / BLOCK_SIZE))
+        if id < self.superblock.node_count {
+            Some(self.superblock.node_table_start + (id * NODE_SIZE as u64 / BLOCK_SIZE))
         } else {
             None
         }
@@ -579,7 +544,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Returns the byte offset of the node within the block.
     fn get_node_offset(&self, node_ptr: NodePtr) -> Option<u64> {
         let id = node_ptr.0;
-        if id < self.fs.superblock.node_count {
+        if id < self.superblock.node_count {
             const NODES_PER_BLOCK: u64 = BLOCK_SIZE / NODE_SIZE as u64;
             Some(id % NODES_PER_BLOCK * NODE_SIZE as u64)
         } else {
@@ -613,20 +578,9 @@ pub enum Error {
     CorruptedDir,
 }
 
-pub trait IntoTransactionResult {
-    type T;
-
-    fn into_transaction_res(self) -> Result<Self::T>;
-}
-
-impl<T> IntoTransactionResult for storage::Result<T> {
-    type T = T;
-
-    fn into_transaction_res(self) -> Result<Self::T> {
-        match self {
-            Ok(v) => Ok(v),
-            Err(e) => Err(Error::Storage(e)),
-        }
+impl From<libc::c_int> for Error {
+    fn from(errno: libc::c_int) -> Self {
+        Self::Storage(errno)
     }
 }
 
