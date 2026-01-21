@@ -7,7 +7,17 @@ use crate::block::{
 
 #[derive(Default)]
 pub struct MapStorage {
+    capacity: u64,
     blocks: HashMap<BlockAddr, Block>,
+}
+
+impl MapStorage {
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            ..Default::default()
+        }
+    }
 }
 
 impl Storage for MapStorage {
@@ -22,6 +32,6 @@ impl Storage for MapStorage {
     }
 
     fn capacity(&self) -> Result<u64> {
-        Ok(u64::MAX)
+        Ok(self.capacity)
     }
 }
