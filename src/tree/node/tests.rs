@@ -384,14 +384,31 @@ mod leaf {
         assert_eq!(expect_change, got_change)
     }
 
+    fn find_rotatable_config() -> (usize, usize) {
+        let mut data_len = 1;
+        loop {
+            let item_size = data_len + size_of::<LeafItem>();
+            if item_size > NODE_CAPACITY {
+                panic!("couldn't find suitable item size for test");
+            }
+            let count = NODE_CAPACITY / item_size;
+            let req = OCCUPANCY_THRESH.div_ceil(item_size);
+            if count >= 2 * req {
+                return (data_len, count);
+            }
+            data_len += 1;
+        }
+    }
+
     #[test]
     fn rotate_left() {
         let mut leaf = leaf!();
-
-        const COUNT: usize = NODE_CAPACITY / (DATA_MAX_LEN + size_of::<LeafItem>());
         let mut right = leaf!();
-        let data = [0xABu8; DATA_MAX_LEN];
-        for i in 0..COUNT as u64 {
+
+        let (data_len, count) = find_rotatable_config();
+
+        let data = vec![0xABu8; data_len];
+        for i in 0..count as u64 {
             right.insert(key!(i), &data).unwrap();
         }
 
@@ -406,11 +423,11 @@ mod leaf {
         let mut leaf = leaf!();
         let mut left = leaf!();
 
-        let data = b"foo";
-        const COUNT: usize = OCCUPANCY_THRESH / ("foo".len() + size_of::<LeafItem>()) - 1;
-        for i in 0..COUNT as u64 {
-            left.insert(key!(i), data).unwrap();
-            leaf.insert(key!(i), data).unwrap();
+        let (data_len, count) = find_rotatable_config();
+
+        let data = vec![0xABu8; data_len];
+        for i in 0..count as u64 {
+            left.insert(key!(i), &data).unwrap();
         }
 
         leaf.rotate_right(&mut left).unwrap();
@@ -469,7 +486,7 @@ mod leaf {
     fn merge_full() {
         const SIZE: usize = NODE_CAPACITY - size_of::<LeafItem>();
         let data = [0xABu8; SIZE];
-        let mut leaf = leaf!(0 => &data);
+        let mut leaf = leaf!(0 => b"foo");
         let right = leaf!(1 => &data);
         assert!(matches!(leaf.merge(&right), Err(MergeError::Overflows)));
     }
