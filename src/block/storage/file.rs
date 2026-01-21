@@ -1,6 +1,5 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{Seek, SeekFrom},
     os::unix::fs::FileExt,
 };
 
@@ -56,6 +55,10 @@ impl Storage for FileStorage {
     }
 
     fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
+        if addr >= self.capacity()? {
+            return Err(libc::EIO);
+        }
+
         self.file
             .write_at(&block.data, addr * BLOCK_SIZE)
             .into_errno()
@@ -68,8 +71,8 @@ impl Storage for FileStorage {
             })
     }
 
-    fn capacity(&mut self) -> Result<u64> {
-        let size = self.file.seek(SeekFrom::End(0)).into_errno()?;
+    fn capacity(&self) -> Result<u64> {
+        let size = self.file.metadata().into_errno()?.len();
         Ok(size / BLOCK_SIZE)
     }
 }
@@ -89,4 +92,24 @@ impl<T> IntoErrno for std::io::Result<T> {
             Err(e) => Err(e.raw_os_error().unwrap_or(libc::EIO)),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempfile;
+
+    use super::*;
+
+    use crate::{block::storage::tests::TestableStorage, test_storage};
+
+    impl TestableStorage for FileStorage {
+        fn new_for_test(block_count: u64) -> Self {
+            let file = tempfile().expect("failed to create temporary file");
+            let size = block_count * BLOCK_SIZE;
+            file.set_len(size).expect("failed to set file length");
+            Self { file }
+        }
+    }
+
+    test_storage!(FileStorage);
 }

@@ -41,7 +41,7 @@ impl<S: Storage> Storage for CachedStorage<'_, S> {
         Ok(())
     }
 
-    fn capacity(&mut self) -> Result<u64> {
+    fn capacity(&self) -> Result<u64> {
         self.inner.capacity()
     }
 }
