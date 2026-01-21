@@ -14,6 +14,7 @@ use zerocopy::{
 
 use crate::{
     block::{BLOCK_SIZE, Block, BlockAddr, BlockAddrStored},
+    fs::node::NodeId,
     tree::{Error, InsertError, MergeError, RotateError},
 };
 
@@ -116,11 +117,9 @@ where
     }
 
     fn items(&self) -> &[I] {
-        let (items, _) = <[I]>::try_ref_from_prefix_with_elems(
-            &self.data()[HEADER_SIZE..],
-            self.header().item_count.into(),
-        )
-        .expect("'self.data' must hold a valid item list");
+        let count: usize = self.header().item_count.into();
+        let (items, _) = <[I]>::try_ref_from_prefix_with_elems(&self.data()[HEADER_SIZE..], count)
+            .expect("'self.data' must hold a valid item list");
         items
     }
 
@@ -130,8 +129,17 @@ where
             .ok()
     }
 
+    fn get_item_idx_le(&self, key: Key) -> Option<usize> {
+        let idx = self.items().partition_point(|item| item.key() <= key);
+        if idx == 0 { None } else { Some(idx - 1) }
+    }
+
     fn get_item(&self, key: Key) -> Option<&I> {
         self.get_item_idx(key).map(|idx| &self.items()[idx])
+    }
+
+    fn get_item_le(&self, key: Key) -> Option<&I> {
+        self.get_item_idx_le(key).map(|idx| &self.items()[idx])
     }
 
     fn used_space(&self) -> usize {
@@ -296,7 +304,7 @@ where
     /// Returns the index of the item containing the child.
     pub(super) fn child_idx_for(&self, key: Key) -> usize {
         self.items()
-            .partition_point(|item| item.key <= key)
+            .partition_point(|item| item.key() <= key)
             .saturating_sub(1)
     }
 
@@ -360,8 +368,12 @@ where
 
     /// Returns a reference to the data associated with the item corresponding to the key.
     pub(super) fn get(&self, key: Key) -> Option<&[u8]> {
-        let item = self.get_item(key)?;
-        Some(self.get_for_item(item))
+        self.get_item(key).map(|item| self.get_for_item(item))
+    }
+
+    pub(super) fn get_le(&self, key: Key) -> Option<(Key, &[u8])> {
+        self.get_item_le(key)
+            .map(|item| (item.key, self.get_for_item(item)))
     }
 }
 
@@ -587,28 +599,56 @@ impl Default for Header {
 #[derive(Debug, Clone, Copy)]
 #[derive(TryFromBytes, IntoBytes, Immutable, Unaligned)]
 pub struct Key {
-    // The id of the object associated with this item
-    obj_id: U64,
-    data_type: DataType,
+    // The node this item is associated with
+    pub id: NodeId,
+    pub datatype: DataType,
     // Additional information that depends on the data type
-    offset: U64,
+    pub offset: U64,
 }
 
 impl Key {
-    pub fn new(obj_id: u64, data_type: DataType, offset: u64) -> Self {
+    pub fn new(id: NodeId, datatype: DataType, offset: u64) -> Self {
         Self {
-            obj_id: obj_id.into(),
-            data_type,
+            id,
+            datatype,
             offset: offset.into(),
         }
+    }
+
+    pub fn node(id: NodeId) -> Self {
+        Self {
+            id,
+            datatype: DataType::Node,
+            offset: 0.into(),
+        }
+    }
+
+    pub fn direntry(id: NodeId, hash: u64) -> Self {
+        Self {
+            id,
+            datatype: DataType::DirEntry,
+            offset: hash.into(),
+        }
+    }
+
+    pub fn extent(id: NodeId, offset: u64) -> Self {
+        Self {
+            id,
+            datatype: DataType::Extent,
+            offset: offset.into(),
+        }
+    }
+
+    pub fn offset(&self) -> u64 {
+        self.offset.get()
     }
 }
 
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.obj_id
-            .cmp(&other.obj_id)
-            .then(self.data_type.cmp(&other.data_type))
+        self.id
+            .cmp(&other.id)
+            .then(self.datatype.cmp(&other.datatype))
             .then(self.offset.cmp(&other.offset))
     }
 }
@@ -621,9 +661,7 @@ impl PartialOrd for Key {
 
 impl PartialEq for Key {
     fn eq(&self, other: &Self) -> bool {
-        self.obj_id == other.obj_id
-            && self.data_type == other.data_type
-            && self.offset == other.offset
+        self.id == other.id && self.datatype == other.datatype && self.offset == other.offset
     }
 }
 
@@ -635,7 +673,7 @@ impl Eq for Key {}
 #[derive(TryFromBytes, IntoBytes, Immutable, Unaligned)]
 pub enum DataType {
     // A filesystem object
-    Inode,
+    Node,
     // A contiguous range of blocks that belongs to a node
     Extent,
     // A mapping of a name to a node

@@ -7,6 +7,8 @@ fn usage() -> ! {
 }
 
 fn main() {
+    env_logger::init();
+
     let mut storage_path = None;
     let mut mount_point = None;
     let args = std::env::args().skip(1);

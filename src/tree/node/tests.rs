@@ -3,10 +3,10 @@ use super::*;
 #[macro_export]
 macro_rules! key {
     () => {
-        Key::new(0, DataType::Inode, 0)
+        Key::new(crate::fs::node::NodeId::NULL, DataType::Node, 0)
     };
     ($obj_id:expr) => {
-        Key::new($obj_id, DataType::Inode, 0)
+        Key::new(crate::fs::node::NodeId::new($obj_id), DataType::Node, 0)
     };
 }
 
@@ -227,7 +227,7 @@ mod leaf {
                         Some(expected),
                         got,
                         "mismatch when getting {:?}: expected {:?}, got {:?}",
-                        key.obj_id,
+                        key,
                         Some(expected),
                         got
                     );
@@ -243,7 +243,7 @@ mod leaf {
                     assert!(
                         matches!(got, None),
                         "mismatch when getting {:?}: expected None, got {:?}",
-                        key.obj_id,
+                        key,
                         got
                     );
                 )*

@@ -1,31 +1,28 @@
 mod cached;
 use cached::*;
 
-use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
-
 use crate::{
-    block::{
-        BLOCK_SIZE, Block, BlockAddr,
-        allocator::{self, Allocator, bitmap::BitmapAllocator},
-        storage::Storage,
-    },
+    block::{allocator::bitmap::BitmapAllocator, storage::Storage},
     fs::{
         Filesystem,
-        alloc_map::{self, AllocMap},
-        dir::{self, Dir, DirEntry, DirEntryName},
-        node::{self, FileType, NODE_SIZE, Node, NodePtr, NodeTime},
+        error::Result,
+        node::{
+            FileType, Node, NodeId,
+            dir::{Dir, DirEntry, DirEntryName},
+            file::File,
+            symlink::Symlink,
+        },
         superblock::Superblock,
     },
 };
 
 /// Filesystem operation that buffers changes in memory before commiting them to persistent storage.
 pub struct Transaction<'a, S: Storage> {
-    superblock: &'a Superblock,
+    fs_superblock: &'a mut Superblock,
     fs_allocator: &'a mut BitmapAllocator,
-    fs_node_map: &'a mut AllocMap,
     // TODO: Replace full clones with caching changes only
+    superblock: Superblock,
     allocator: BitmapAllocator,
-    node_map: AllocMap,
     storage: CachedStorage<'a, S>,
 }
 
@@ -33,602 +30,227 @@ impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
     pub(super) fn new(fs: &'a mut Filesystem<S>) -> Self {
         let allocator = fs.allocator.clone();
-        let node_map = fs.node_map.clone();
+        let superblock = fs.superblock.clone();
         Self {
-            superblock: &fs.superblock,
+            fs_superblock: &mut fs.superblock,
             fs_allocator: &mut fs.allocator,
-            fs_node_map: &mut fs.node_map,
+            superblock,
             allocator,
-            node_map,
             storage: CachedStorage::new(&mut fs.storage),
         }
     }
 
     /// Commits the transaction to storage, consuming itself.
     pub(super) fn commit(mut self) -> Result<()> {
+        self.sync_superblock()?;
         self.sync_allocator()?;
-        self.sync_node_map()?;
         self.storage.sync()?;
         Ok(())
     }
 
+    /// Queues a synchronization of allocation maps.
+    fn sync_superblock(&mut self) -> Result<()> {
+        Filesystem::write_superblock(&mut self.storage, &self.superblock)?;
+        *self.fs_superblock = self.superblock.clone();
+        Ok(())
+    }
+
     fn sync_allocator(&mut self) -> Result<()> {
-        let mut addr = self.superblock.allocator_start;
-        let bytes = self.allocator.as_bytes();
-        let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
-
-        for chunk in chunks {
-            let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
-            self.storage.write_at(block, addr)?;
-            addr += 1;
-        }
-
-        if !remainder.is_empty() {
-            let block = Block::new(remainder);
-            self.storage.write_at(&block, addr)?;
-        }
-
+        Filesystem::write_allocator(&mut self.storage, &self.superblock, &self.allocator)?;
         *self.fs_allocator = self.allocator.clone();
         Ok(())
     }
 
-    /// Queues a synchronization of allocation maps.
-    fn sync_node_map(&mut self) -> Result<()> {
-        let mut addr = self.superblock.node_map_start;
-        let bytes = self.node_map.as_slice().as_bytes();
-        let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
-
-        for chunk in chunks {
-            let block = Block::ref_from_bytes(chunk).expect("'Block' is unaligned");
-            self.storage.write_at(block, addr)?;
-            addr += 1;
-        }
-
-        if !remainder.is_empty() {
-            let block = Block::new(remainder);
-            self.storage.write_at(&block, addr)?;
-        }
-
-        *self.fs_node_map = self.node_map.clone();
-        Ok(())
+    pub fn create_node(&mut self, filetype: FileType, links: u32) -> Result<NodeId> {
+        Node::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            filetype,
+            links,
+        )
     }
 
-    /// Reads the node from the node table.
-    pub fn read_node(&self, node_ptr: NodePtr) -> Result<Node> {
-        let addr = self
-            .get_node_block_addr(node_ptr)
-            .ok_or(Error::NodePtrOutOfBounds)?;
-
-        let mut block = Block::default();
-        self.storage.read_at(&mut block, addr)?;
-        let offset = self
-            .get_node_offset(node_ptr)
-            .ok_or(Error::NodePtrOutOfBounds)?;
-
-        let node =
-            Node::try_read_from_bytes(&block.data[offset as usize..(offset as usize + NODE_SIZE)])
-                .expect("'block.data' must hold a valid 'Node'");
-
-        Ok(node)
+    pub fn read_node(&self, id: NodeId) -> Result<Node> {
+        Node::read(&self.storage, &self.superblock, id)
     }
 
-    /// Queues a write of the node to the node table.
-    pub fn write_node(&mut self, node: &mut Node, node_ptr: NodePtr) -> Result<()> {
-        let addr = self
-            .get_node_block_addr(node_ptr)
-            .ok_or(Error::NodePtrOutOfBounds)?;
-
-        let mut block = Block::default();
-        self.storage.read_at(&mut block, addr)?;
-
-        let offset = self
-            .get_node_offset(node_ptr)
-            .ok_or(Error::NodePtrOutOfBounds)?;
-        block.data[offset as usize..(offset as usize + NODE_SIZE)].copy_from_slice(node.as_bytes());
-
-        self.storage.write_at(&block, addr)?;
-
-        Ok(())
+    pub fn write_node(&mut self, node: &Node, id: NodeId) -> Result<()> {
+        node.write(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            id,
+        )
     }
 
-    /// Queses a change of the node in the node table.
-    /// Same effect as `write_node`, but also updates `node.change_time` on success.
-    pub fn change_node(&mut self, node: &mut Node, node_ptr: NodePtr) -> Result<()> {
-        node.change_time = NodeTime::now();
-        self.write_node(node, node_ptr)
+    pub fn remove_node(&mut self, id: NodeId) -> Result<()> {
+        Node::remove(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            id,
+        )
     }
 
-    /// Allocates a node, returning it and its pointer.
-    pub fn create_node(
-        &mut self,
-        file_type: FileType,
-        perms: u16,
-        uid: u32,
-        gid: u32,
-    ) -> Result<(Node, NodePtr)> {
-        let mut node = Node::new(file_type, perms, uid, gid);
-        let (id, _) = self.node_map.allocate(1)?;
-        let node_ptr = NodePtr(id);
-        self.write_node(&mut node, node_ptr)?;
-        Ok((node, node_ptr))
+    pub fn find_entry(&self, parent: NodeId, name: &str) -> Result<DirEntry> {
+        let name = DirEntryName::try_from(name)?;
+        DirEntry::read(&self.storage, &self.superblock, parent, name.hash())
     }
 
-    /// Removes the node, freeing its blocks.
-    pub fn remove_node(&mut self, node_ptr: NodePtr) -> Result<()> {
-        let mut node = self.read_node(node_ptr)?;
-
-        let spans = node.truncate(0);
-        // TODO: Change Extent to have start and len
-        for &(start, end) in spans.iter() {
-            self.allocator.deallocate(start, end - start)?;
-        }
-
-        // Free the node
-        let id = node_ptr.0;
-        self.node_map.free_at(id)?;
-
-        let mut node = Node::default();
-        self.write_node(&mut node, node_ptr)?;
-
-        Ok(())
+    pub fn create_dir(&mut self, parent: NodeId, name: &str) -> Result<NodeId> {
+        let name = DirEntryName::try_from(name)?;
+        Dir::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            name,
+        )
     }
 
-    /// Reads a number of bytes from the file into `buf` starting from `offset`.
-    /// Returns the number of bytes read.
-    pub fn read_file_at(&mut self, node_ptr: NodePtr, offset: u64, buf: &mut [u8]) -> Result<u64> {
-        let mut node = self.read_node(node_ptr)?;
-
-        if offset >= node.size {
-            return Ok(0);
-        };
-
-        let bytes_available = node.size - offset;
-        let bytes_to_read = bytes_available.min(buf.len() as u64);
-        let mut bytes_read = 0;
-
-        while bytes_read != bytes_to_read {
-            let curr_pos = offset + bytes_read;
-            let offset_in_block = curr_pos % BLOCK_SIZE; // First read might be unaligned
-            let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_read - bytes_read);
-            match node.get_block_addr_from_offset(curr_pos) {
-                Some(addr) => {
-                    let mut block = Block::default();
-                    self.storage.read_at(&mut block, addr)?;
-                    buf[bytes_read as usize..(bytes_read + chunk_size) as usize].copy_from_slice(
-                        &block.data
-                            [offset_in_block as usize..(offset_in_block + chunk_size) as usize],
-                    );
-                }
-                // Handle a sparse file
-                None => {
-                    buf[bytes_read as usize..(bytes_read + chunk_size) as usize].fill(0u8);
-                }
-            };
-            bytes_read += chunk_size;
-        }
-
-        node.access_time = NodeTime::now();
-        self.write_node(&mut node, node_ptr)?;
-
-        Ok(bytes_read)
+    pub fn remove_dir(&mut self, parent: NodeId, name: &str) -> Result<NodeId> {
+        Dir::remove(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            name,
+        )
     }
 
-    /// Writes a number of bytes from `buf` to the file starting from `offset`.
-    /// Returns the number of byttes written.
-    pub fn write_file_at(&mut self, node_ptr: NodePtr, offset: u64, buf: &[u8]) -> Result<u64> {
-        let mut node = self.read_node(node_ptr)?;
-
-        let bytes_to_write = buf.len() as u64;
-        let mut bytes_written = 0;
-
-        while bytes_written != bytes_to_write {
-            let curr_pos = offset + bytes_written;
-            let offset_in_block = curr_pos % BLOCK_SIZE; // First write might be unaligned
-            let block_offset = Node::get_block_offset_from_offset(curr_pos);
-
-            let (addr, has_alloc) = match node.get_block_addr(block_offset) {
-                Some(addr) => (addr, false),
-                None => {
-                    // Allocate a block
-                    let addr = self.allocator.allocate(1)?;
-                    node.map_block(block_offset, addr)?;
-                    (addr, true)
-                }
-            };
-
-            let mut block = Block::default();
-            // Don't need to read if it's a freshly allocated block
-            if !has_alloc {
-                self.storage.read_at(&mut block, addr)?
-            };
-
-            let chunk_size = (BLOCK_SIZE - offset_in_block).min(bytes_to_write - bytes_written);
-            block.data[offset_in_block as usize..(offset_in_block + chunk_size) as usize]
-                .copy_from_slice(
-                    &buf[bytes_written as usize..(bytes_written + chunk_size) as usize],
-                );
-
-            self.storage.write_at(&block, addr)?;
-            bytes_written += chunk_size;
-        }
-
-        let end_pos = offset + bytes_written;
-        if end_pos > node.size {
-            node.size = end_pos;
-        }
-
-        node.mod_time = NodeTime::now();
-        self.change_node(&mut node, node_ptr)?;
-
-        Ok(bytes_written)
+    pub fn read_dir(&self, id: NodeId) -> Result<Vec<DirEntry>> {
+        Dir::list(&self.storage, &self.superblock, id)
     }
 
-    /// Creates a file with a given name and type inside `parent_ptr`.
-    /// Returns the file's node pointer.
+    pub fn create_root_dir(&mut self) -> Result<NodeId> {
+        let id = Node::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            FileType::Dir,
+            1,
+        )?;
+
+        assert_eq!(id, NodeId::ROOT, "root must have id 1, got {:?}", id);
+
+        DirEntry::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            id,
+            FileType::Dir,
+            id,
+            DirEntryName::itself(),
+        )?;
+
+        DirEntry::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            id,
+            FileType::Dir,
+            id,
+            DirEntryName::parent(),
+        )?;
+
+        Ok(id)
+    }
+
     pub fn create_file(
         &mut self,
-        parent_ptr: NodePtr,
+        parent: NodeId,
         name: &str,
-        file_type: FileType,
-        perms: u16,
-        uid: u32,
-        gid: u32,
-    ) -> Result<NodePtr> {
+        filetype: FileType,
+    ) -> Result<NodeId> {
+        File::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            filetype,
+            name,
+        )
+    }
+
+    pub fn read_file_at(&self, id: NodeId, offset: u64, buf: &mut [u8]) -> Result<u64> {
+        File::read_at(&self.storage, &self.superblock, id, offset, buf)
+    }
+
+    pub fn write_file_at(&mut self, id: NodeId, offset: u64, buf: &[u8]) -> Result<u64> {
+        File::write_at(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            id,
+            offset,
+            buf,
+        )
+    }
+
+    pub fn truncate_file(&mut self, id: NodeId, size: u64) -> Result<()> {
+        // TODO: Check if the node is a file
+        // TODO: Deallocate extents
+        let mut node = self.read_node(id)?;
+        node.size.set(size);
+        self.write_node(&node, id)
+    }
+
+    pub fn create_symlink(&mut self, parent: NodeId, name: &str, target: &str) -> Result<NodeId> {
+        Symlink::create(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            name,
+            target,
+        )
+    }
+
+    pub fn read_symlink(&self, id: NodeId) -> Result<Box<[u8]>> {
+        Symlink::read(&self.storage, &self.superblock, id)
+    }
+
+    pub fn link_file(&mut self, parent: NodeId, id: NodeId, name: &str) -> Result<()> {
         let name = DirEntryName::try_from(name)?;
-        let mut parent = self.read_dir(parent_ptr)?;
-
-        let (mut node, node_ptr) = self.create_node(file_type, perms, uid, gid)?;
-        node.links += 1;
-
-        let entry = DirEntry::new(node_ptr, file_type, name);
-        parent.add_entry(entry)?;
-
-        self.write_node(&mut node, node_ptr)?;
-        self.write_dir(parent_ptr, &parent)?;
-
-        Ok(node_ptr)
+        DirEntry::link(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            id,
+            name,
+        )
     }
 
-    /// Truncates the file's size to `size`.
-    pub fn truncate_file(&mut self, node_ptr: NodePtr, size: u64) -> Result<()> {
-        let mut node = self.read_node(node_ptr)?;
-
-        match node.file_type {
-            FileType::File => (),
-            FileType::Dir => return Err(Error::IsDir),
-            _ => return Err(Error::NotFile),
-        }
-
-        if size == node.size {
-            return Ok(());
-        }
-
-        let spans = node.truncate(size);
-        // TODO: Change Extent to have start and len
-        for &(start, end) in spans.iter() {
-            self.allocator.deallocate(start, end - start)?;
-        }
-
-        node.mod_time = NodeTime::now();
-        self.change_node(&mut node, node_ptr)?;
-
-        Ok(())
-    }
-
-    /// Reads the directory.
-    pub fn read_dir(&mut self, node_ptr: NodePtr) -> Result<Dir> {
-        let node = self.read_node(node_ptr)?;
-        if node.file_type != FileType::Dir {
-            return Err(Error::NotDir);
-        }
-        let mut buf = vec![0u8; node.size as usize];
-        self.read_file_at(node_ptr, 0, &mut buf)?;
-        let entries = <[DirEntry]>::try_ref_from_bytes(&buf).map_err(|_| Error::CorruptedDir)?;
-        Ok(Dir::from_slice(entries))
-    }
-
-    /// Writes the directory.
-    pub fn write_dir(&mut self, node_ptr: NodePtr, dir: &Dir) -> Result<()> {
-        let bytes = dir.as_slice().as_bytes();
-        self.write_file_at(node_ptr, 0, bytes)?;
-        Ok(())
-    }
-
-    /// Creates a directory with a given name inside `parent_ptr`.
-    /// Returns the directory's node pointer.
-    pub fn create_dir(
-        &mut self,
-        parent_ptr: NodePtr,
-        name: &str,
-        perms: u16,
-        uid: u32,
-        gid: u32,
-    ) -> Result<NodePtr> {
-        let node_ptr = self.create_file(parent_ptr, name, FileType::Dir, perms, uid, gid)?;
-        let parent = Dir::new(node_ptr, parent_ptr);
-        self.write_dir(node_ptr, &parent)?;
-        Ok(node_ptr)
-    }
-
-    /// Removes the empty directory `name` inside `parent_ptr`.
-    pub fn remove_dir(&mut self, parent_ptr: NodePtr, name: &str) -> Result<()> {
+    pub fn unlink_file(&mut self, parent: NodeId, name: &str) -> Result<()> {
         let name = DirEntryName::try_from(name)?;
-        let mut parent = self.read_dir(parent_ptr)?;
-
-        let entry = parent.remove_entry(name).ok_or(Error::EntryNotFound)?;
-        if entry.file_type != FileType::Dir {
-            return Err(Error::NotDir);
-        }
-
-        let node_ptr = entry.node_ptr;
-        let dir = self.read_dir(node_ptr)?;
-        if !dir.is_empty() {
-            return Err(Error::DirNotEmpty);
-        }
-
-        self.write_dir(parent_ptr, &parent)?;
-        self.remove_node(node_ptr)?;
-
-        Ok(())
+        DirEntry::unlink(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            parent,
+            &name,
+        )
     }
 
-    /// Finds the entry named `name` inside `parent_ptr`.
-    pub fn find_entry(&mut self, parent_ptr: NodePtr, name: &str) -> Result<DirEntry> {
-        let name = DirEntryName::try_from(name)?;
-        let parent = self.read_dir(parent_ptr)?;
-        parent.get_entry(name).ok_or(Error::EntryNotFound).copied()
-    }
-
-    /// Renames the entry named `old_name` to `new_name` and moves it from `old_parent_ptr` to
-    /// `new_parent_ptr`.
-    /// If `new_name` exists and is of the same type as `old_name`, it is overwritten. The
-    /// overwrite doesn't succeed if `new_name` is a directory and is not empty.
     pub fn rename_entry(
         &mut self,
-        old_parent_ptr: NodePtr,
+        old_parent: NodeId,
         old_name: &str,
-        new_parent_ptr: NodePtr,
+        new_parent: NodeId,
         new_name: &str,
     ) -> Result<()> {
-        if old_name == "." || old_name == ".." || new_name == "." || new_name == ".." {
-            return Err(Error::InvalidMove);
-        }
-
-        if old_parent_ptr == new_parent_ptr && old_name == new_name {
-            return Ok(());
-        }
-
-        // Remove `old_name` entry from `old_parent_ptr`
-        let mut old_parent = self.read_dir(old_parent_ptr)?;
-        let mut old_entry = old_parent
-            .remove_entry(DirEntryName::try_from(old_name)?)
-            .ok_or(Error::EntryNotFound)?;
-        self.write_dir(old_parent_ptr, &old_parent)?;
-
-        if old_entry.file_type == FileType::Dir {
-            if self.is_ancestor_dir(old_entry.node_ptr, new_parent_ptr)? {
-                return Err(Error::InvalidMove);
-            }
-
-            // Change `old_entry` parent entry to `new_parent_ptr`
-            let mut dir = self.read_dir(old_entry.node_ptr)?;
-            let parent_entry = dir.get_mut_parent();
-            parent_entry.node_ptr = new_parent_ptr;
-            self.write_dir(old_entry.node_ptr, &dir)?;
-        }
-
-        // Remove `new_name` entry from `new_parent_ptr` to overwrite it
-        let new_entry = self.find_entry(new_parent_ptr, new_name);
-        match new_entry {
-            Ok(new_entry) => {
-                if old_entry.file_type != new_entry.file_type {
-                    return Err(Error::InvalidMove);
-                }
-
-                match new_entry.file_type {
-                    FileType::Dir => self.remove_dir(new_parent_ptr, new_name)?,
-                    FileType::File | FileType::Symlink => {
-                        self.unlink_file(new_parent_ptr, new_name, true)?
-                    }
-                }
-            }
-            Err(Error::EntryNotFound) => (),
-            Err(e) => return Err(e),
-        }
-
-        // Add `old_entry` with `new_name` to `new_parent_ptr`
-        old_entry.name = DirEntryName::try_from(new_name)?;
-        let mut new_parent = self.read_dir(new_parent_ptr)?;
-        new_parent.add_entry(old_entry)?;
-        self.write_dir(new_parent_ptr, &new_parent)?;
-
-        Ok(())
-    }
-
-    /// Checks if `ancestor_ptr` is an ancestor directory of `dir_ptr` directory.
-    /// Ancestry is reflexive, i.e. a directory is its own ancestor.
-    fn is_ancestor_dir(&mut self, ancestor_ptr: NodePtr, dir_ptr: NodePtr) -> Result<bool> {
-        let mut curr_parent_ptr = dir_ptr;
-        loop {
-            if curr_parent_ptr == ancestor_ptr {
-                return Ok(true);
-            } else if curr_parent_ptr == NodePtr::ROOT {
-                return Ok(false);
-            }
-            let parent = self.read_dir(curr_parent_ptr)?;
-            curr_parent_ptr = parent.parent_ptr();
-        }
-    }
-
-    /// Creates a hard link to the file with a given name.
-    pub fn link_file(&mut self, parent_ptr: NodePtr, node_ptr: NodePtr, name: &str) -> Result<()> {
-        let name = DirEntryName::try_from(name)?;
-        let mut parent = self.read_dir(parent_ptr)?;
-
-        let mut node = self.read_node(node_ptr)?;
-        if node.file_type == FileType::Dir {
-            return Err(Error::IsDir);
-        }
-
-        let entry = DirEntry::new(node_ptr, node.file_type, name);
-        parent.add_entry(entry)?;
-        node.links += 1;
-
-        self.change_node(&mut node, node_ptr)?;
-        self.write_dir(parent_ptr, &parent)?;
-
-        Ok(())
-    }
-
-    /// Removes a hard link to the file with a given name.
-    /// If `free` is true, deletes the node if `node.link_count` drops to 0, else it must be deallocated manually.
-    pub fn unlink_file(&mut self, parent_ptr: NodePtr, name: &str, free: bool) -> Result<()> {
-        let name = DirEntryName::try_from(name)?;
-        let mut parent = self.read_dir(parent_ptr)?;
-
-        let entry = parent.remove_entry(name).ok_or(Error::EntryNotFound)?;
-        if entry.file_type == FileType::Dir {
-            return Err(Error::IsDir);
-        }
-
-        let node_ptr = entry.node_ptr;
-        let mut node = self.read_node(node_ptr)?;
-        node.links -= 1;
-
-        self.write_dir(parent_ptr, &parent)?;
-        if node.links == 0 && free {
-            self.remove_node(node_ptr)?;
-        } else {
-            self.change_node(&mut node, node_ptr)?;
-        }
-
-        Ok(())
-    }
-
-    /// Returns the path contained inside `symlink_ptr`.
-    pub fn read_symlink(&mut self, symlink_ptr: NodePtr) -> Result<Vec<u8>> {
-        let node = self.read_node(symlink_ptr)?;
-        if node.file_type != FileType::Symlink {
-            return Err(Error::NotSymlink);
-        }
-        let mut buf = vec![0u8; node.size as usize];
-        self.read_file_at(symlink_ptr, 0, &mut buf)?;
-        Ok(buf)
-    }
-
-    /// Creates a symlink inside `parent_ptr`, containing `target`.
-    /// Returns the node pointer of the symlink.
-    pub fn create_symlink(
-        &mut self,
-        parent_ptr: NodePtr,
-        name: &str,
-        target: &str,
-        uid: u32,
-        gid: u32,
-    ) -> Result<NodePtr> {
-        let node_ptr = self.create_file(parent_ptr, name, FileType::Symlink, 0o777u16, uid, gid)?;
-        self.write_file_at(node_ptr, 0, target.as_bytes())?;
-        Ok(node_ptr)
-    }
-
-    /// Returns the address of the block in which the node resides.
-    fn get_node_block_addr(&self, node_ptr: NodePtr) -> Option<BlockAddr> {
-        let id = node_ptr.0;
-        if id < self.superblock.node_count {
-            Some(self.superblock.node_table_start + (id * NODE_SIZE as u64 / BLOCK_SIZE))
-        } else {
-            None
-        }
-    }
-
-    /// Returns the byte offset of the node within the block.
-    fn get_node_offset(&self, node_ptr: NodePtr) -> Option<u64> {
-        let id = node_ptr.0;
-        if id < self.superblock.node_count {
-            const NODES_PER_BLOCK: u64 = BLOCK_SIZE / NODE_SIZE as u64;
-            Some(id % NODES_PER_BLOCK * NODE_SIZE as u64)
-        } else {
-            None
-        }
-    }
-}
-
-pub type Result<T> = core::result::Result<T, Error>;
-
-#[derive(Debug)]
-pub enum Error {
-    Storage(libc::c_int),
-
-    Allocator(allocator::Error),
-    NodeMap(alloc_map::Error),
-    Dir(dir::Error),
-    Node(node::Error),
-
-    EntryNotFound,
-    NotFile,
-    IsDir,
-    NotDir,
-    DirNotEmpty,
-    InvalidMove,
-    NotSymlink,
-    TooManySymlinks,
-
-    // Filesystem corruption or logic error
-    NodePtrOutOfBounds,
-    CorruptedDir,
-}
-
-impl From<libc::c_int> for Error {
-    fn from(errno: libc::c_int) -> Self {
-        Self::Storage(errno)
-    }
-}
-
-impl From<allocator::Error> for Error {
-    fn from(err: allocator::Error) -> Self {
-        Self::Allocator(err)
-    }
-}
-
-impl From<alloc_map::Error> for Error {
-    fn from(err: alloc_map::Error) -> Self {
-        Self::NodeMap(err)
-    }
-}
-
-impl From<dir::Error> for Error {
-    fn from(err: dir::Error) -> Self {
-        Self::Dir(err)
-    }
-}
-
-impl From<node::Error> for Error {
-    fn from(err: node::Error) -> Self {
-        Self::Node(err)
-    }
-}
-
-impl From<Error> for libc::c_int {
-    fn from(err: Error) -> Self {
-        match err {
-            Error::Storage(errno) => errno,
-
-            Error::Allocator(e) => e.into(),
-            Error::NodeMap(e) => e.into(),
-            Error::Dir(e) => e.into(),
-            Error::Node(e) => e.into(),
-
-            Error::EntryNotFound => libc::ENOENT,
-            Error::NotFile => libc::EINVAL,
-            Error::IsDir => libc::EISDIR,
-            Error::NotDir => libc::ENOTDIR,
-            Error::DirNotEmpty => libc::ENOTEMPTY,
-            Error::InvalidMove => libc::EINVAL,
-            Error::NotSymlink => libc::EINVAL,
-            Error::TooManySymlinks => libc::ELOOP,
-
-            Error::NodePtrOutOfBounds => libc::EIO,
-            Error::CorruptedDir => libc::EIO,
-        }
+        let old_name = DirEntryName::try_from(old_name)?;
+        let new_name = DirEntryName::try_from(new_name)?;
+        DirEntry::rename(
+            &mut self.storage,
+            &mut self.allocator,
+            &mut self.superblock,
+            old_parent,
+            &old_name,
+            new_parent,
+            &new_name,
+        )
     }
 }

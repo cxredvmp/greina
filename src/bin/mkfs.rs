@@ -1,7 +1,4 @@
-use greina::{
-    block::storage::{Storage, file::FileStorage},
-    fs::Filesystem,
-};
+use greina::{block::storage::file::FileStorage, fs::Filesystem};
 
 fn usage() -> ! {
     eprintln!("mkfs.greina device");
@@ -27,7 +24,7 @@ fn main() {
         std::process::exit(1);
     };
 
-    let mut storage = match FileStorage::open(&storage_path) {
+    let storage = match FileStorage::open(&storage_path) {
         Ok(storage) => storage,
         Err(e) => {
             eprintln!(
@@ -39,19 +36,12 @@ fn main() {
         }
     };
 
-    let block_count = storage
-        .capacity()
-        .expect("must be able to count the number of blocks");
-    // 1 node per 4 blocks = 512 bytes / 16384 bytes = 3,125 % of space for nodes
-    let node_count = block_count / 4;
-
-    match Filesystem::create(storage, node_count) {
+    match Filesystem::format(storage) {
         Ok(fs) => {
             eprintln!(
-                "mkfs.greina: created filesystem on {} with {} blocks and {} nodes",
+                "mkfs.greina: created filesystem on {} with {} blocks",
                 storage_path,
-                fs.superblock().block_count,
-                fs.superblock().node_count
+                fs.superblock().block_count
             );
         }
         Err(e) => {

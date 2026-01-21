@@ -9,26 +9,31 @@ use crate::{
         allocator::{Allocator, set::SetAllocator},
         storage::map::MapStorage,
     },
+    fs::node::NodeId,
     key, keys,
 };
 
 use super::*;
 
+fn arb_node_id(max_id: u64) -> impl Strategy<Value = NodeId> {
+    (0..max_id).prop_map(NodeId::new)
+}
+
 fn arb_data_type() -> impl Strategy<Value = DataType> {
     prop_oneof![
-        Just(DataType::Inode),
+        Just(DataType::Node),
         Just(DataType::Extent),
         Just(DataType::DirEntry),
     ]
 }
 
 prop_compose! {
-    fn arb_key(max_obj_id: u64, max_offset: u64)(
-        obj_id in 0..max_obj_id,
+    fn arb_key(max_id: u64, max_offset: u64)(
+        id in arb_node_id(max_id),
         data_type in arb_data_type(),
         offset in 0..max_offset,
         ) -> Key {
-        Key::new(obj_id, data_type, offset)
+        Key::new(id, data_type, offset)
     }
 }
 
@@ -117,7 +122,7 @@ impl TreeState {
     }
 
     fn insert(&mut self, key: Key, data: &[u8]) -> Result<()> {
-        Tree::insert(
+        Tree::try_insert(
             &mut self.storage,
             &mut self.allocator,
             &mut self.root_addr,

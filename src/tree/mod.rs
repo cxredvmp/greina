@@ -2,19 +2,19 @@
 mod tests;
 
 mod node;
+pub use node::DataType;
+pub use node::Key;
+use node::*;
 
 use std::marker::PhantomData;
 
-use crate::{
-    block::{
-        Block, BlockAddr,
-        allocator::{self, Allocator},
-        storage::Storage,
-    },
-    tree::node::*,
+use crate::block::{
+    Block, BlockAddr,
+    allocator::{self, Allocator},
+    storage::Storage,
 };
 
-const DATA_MAX_LEN: usize = 512;
+pub const DATA_MAX_LEN: usize = 512;
 
 pub struct Tree<S> {
     _storage: PhantomData<S>,
@@ -24,6 +24,13 @@ impl<S> Tree<S>
 where
     S: Storage,
 {
+    pub fn format(storage: &mut S, root_addr: BlockAddr) -> Result<()> {
+        let mut block = Block::default();
+        let _ = Leaf::format(&mut block, 0);
+        storage.write_at(&block, root_addr)?;
+        Ok(())
+    }
+
     pub fn get(storage: &S, mut root_addr: BlockAddr, key: Key) -> Result<Option<Box<[u8]>>> {
         let mut block = Block::default();
 
@@ -42,9 +49,47 @@ where
         Ok(leaf.get(key).map(|data| data.to_vec().into_boxed_slice()))
     }
 
-    pub fn insert<A: Allocator>(
+    pub fn get_le(
+        storage: &S,
+        mut root_addr: BlockAddr,
+        key: Key,
+    ) -> Result<Option<(Key, Box<[u8]>)>> {
+        let mut block = Block::default();
+
+        let leaf = loop {
+            storage.read_at(&mut block, root_addr)?;
+
+            match NodeVariant::try_new(&block)? {
+                NodeVariant::Branch(branch) => {
+                    root_addr = branch.child_for(key);
+                }
+
+                NodeVariant::Leaf(leaf) => break leaf,
+            }
+        };
+
+        Ok(leaf.get_le(key).map(|(key, data)| (key, data.into())))
+    }
+
+    pub fn insert(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
+        root_addr: &mut BlockAddr,
+        key: Key,
+        data: &[u8],
+    ) -> Result<Option<Box<[u8]>>> {
+        // TODO: This is an inefficient and unsafe temporary solution
+        let target_data = Self::remove(storage, allocator, root_addr, key)?;
+        match Self::try_insert(storage, allocator, root_addr, key, data) {
+            Ok(()) => Ok(target_data),
+            Err(Error::Occupied) => unreachable!(),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn try_insert(
+        storage: &mut S,
+        allocator: &mut impl Allocator,
         root_addr: &mut BlockAddr,
         key: Key,
         data: &[u8],
@@ -66,9 +111,9 @@ where
         }
     }
 
-    fn handle_split_root<A: Allocator>(
+    fn handle_split_root(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         root_addr: &mut BlockAddr,
         result: SplitOutcome,
     ) -> Result<()> {
@@ -97,9 +142,9 @@ where
         Ok(())
     }
 
-    fn insert_recursive<A: Allocator>(
+    fn insert_recursive(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         addr: BlockAddr,
         key: Key,
         data: &[u8],
@@ -200,9 +245,9 @@ where
         }
     }
 
-    fn handle_overflow<A: Allocator, I: Item>(
+    fn handle_overflow<I: Item>(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         node: &mut Node<&mut Block, I>,
         node_addr: BlockAddr,
     ) -> Result<SplitOutcome>
@@ -225,9 +270,9 @@ where
         })
     }
 
-    fn handle_split_child<A: Allocator>(
+    fn handle_split_child(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         branch: &mut Branch<&mut Block>,
         branch_addr: BlockAddr,
         child_result: SplitOutcome,
@@ -306,9 +351,9 @@ where
         }
     }
 
-    pub fn remove<A: Allocator>(
+    pub fn remove(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         root_addr: &mut BlockAddr,
         key: Key,
     ) -> Result<Option<Box<[u8]>>> {
@@ -322,9 +367,9 @@ where
         }
     }
 
-    fn handle_deficient_root<A: Allocator>(
+    fn handle_deficient_root(
         storage: &S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         root_addr: &mut BlockAddr,
     ) -> Result<()> {
         let mut block = Block::default();
@@ -343,9 +388,9 @@ where
         }
     }
 
-    fn remove_recursive<A: Allocator>(
+    fn remove_recursive(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         root_addr: BlockAddr,
         key: Key,
     ) -> Result<RemoveOutcome> {
@@ -410,9 +455,9 @@ where
         }
     }
 
-    fn handle_deficient<A: Allocator, I: Item>(
+    fn handle_deficient<I: Item>(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         child: &mut Node<&mut Block, I>,
@@ -469,9 +514,9 @@ where
         Ok(())
     }
 
-    fn rotate<A: Allocator, I: Item>(
+    fn rotate<I: Item>(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         left: &mut Node<&mut Block, I>,
@@ -512,9 +557,9 @@ where
         Ok(true)
     }
 
-    fn merge<A: Allocator, I: Item>(
+    fn merge<I: Item>(
         storage: &mut S,
-        allocator: &mut A,
+        allocator: &mut impl Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         left: &mut Node<&mut Block, I>,
@@ -591,6 +636,7 @@ pub enum Error {
     Uninterpretable,
     Occupied,
     DataTooLong,
+
     Storage(libc::c_int),
     Allocator(allocator::Error),
 }
