@@ -12,10 +12,7 @@ pub struct MapStorage {
 
 impl Storage for MapStorage {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
-        *block = *self.blocks.get(&addr).expect(&format!(
-            "attempted to read uninitialized block at address {}",
-            addr
-        ));
+        *block = *self.blocks.get(&addr).ok_or(libc::EIO)?;
         Ok(())
     }
 
