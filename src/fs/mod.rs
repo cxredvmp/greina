@@ -42,8 +42,8 @@ impl<S: Storage> Filesystem<S> {
         let mut superblock = Superblock::new(block_count);
         Self::format_root(&mut storage, &mut allocator, &mut superblock)?;
 
-        Self::write_superblock(&mut storage, &mut superblock)?;
-        Self::write_allocator(&mut storage, &mut superblock, &allocator)?;
+        Self::write_superblock(&mut storage, &superblock)?;
+        Self::write_allocator(&mut storage, &superblock, &allocator)?;
 
         // Create filesystem
         let mut fs = Filesystem {

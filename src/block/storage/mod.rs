@@ -99,27 +99,27 @@ macro_rules! test_storage {
     ($storage:ty) => {
         #[test]
         fn capacity() {
-            crate::block::storage::tests::capacity::<$storage>();
+            $crate::block::storage::tests::capacity::<$storage>();
         }
 
         #[test]
         fn write_and_read() {
-            crate::block::storage::tests::write_and_read::<$storage>();
+            $crate::block::storage::tests::write_and_read::<$storage>();
         }
 
         #[test]
         fn no_interference() {
-            crate::block::storage::tests::no_interference::<$storage>();
+            $crate::block::storage::tests::no_interference::<$storage>();
         }
 
         #[test]
         fn out_of_bounds() {
-            crate::block::storage::tests::out_of_bounds::<$storage>();
+            $crate::block::storage::tests::out_of_bounds::<$storage>();
         }
 
         #[test]
         fn overwrite() {
-            crate::block::storage::tests::overwrite::<$storage>();
+            $crate::block::storage::tests::overwrite::<$storage>();
         }
     };
 }
