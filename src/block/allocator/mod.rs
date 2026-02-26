@@ -17,7 +17,7 @@ pub trait Allocator {
     fn available(&self) -> u64;
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {

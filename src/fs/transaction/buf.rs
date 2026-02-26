@@ -1,111 +1,186 @@
-use std::collections::BTreeMap;
+pub use allocator::BufAllocator;
 
-use crate::block::{
-    Block, BlockAddr,
-    storage::{Result, Storage},
-};
+pub mod allocator {
+    use crate::{
+        block::{
+            BlockAddr,
+            allocator::{Allocator, Result, bitmap::BitmapAllocator},
+            storage::Storage,
+        },
+        fs::{self, Filesystem},
+    };
 
-pub(super) struct BufStorage<'a, S> {
-    inner: &'a mut S,
-    cache: BTreeMap<BlockAddr, Block>,
-}
-
-impl<'a, S: Storage> BufStorage<'a, S> {
-    pub(super) fn new(inner: &'a mut S) -> Self {
-        Self {
-            inner,
-            cache: Default::default(),
-        }
+    pub struct BufAllocator<'a> {
+        inner: &'a mut BitmapAllocator,
+        allocs: Vec<(BlockAddr, u64)>,
+        deallocs: Vec<(BlockAddr, u64)>,
     }
 
-    pub(super) fn sync(&mut self) -> Result<()> {
-        for (addr, block) in &self.cache {
-            self.inner.write_at(block, *addr)?;
+    impl<'a> BufAllocator<'a> {
+        pub fn new(inner: &'a mut BitmapAllocator) -> Self {
+            Self {
+                inner,
+                allocs: Vec::new(),
+                deallocs: Vec::new(),
+            }
         }
-        Ok(())
-    }
-}
 
-impl<S: Storage> Storage for BufStorage<'_, S> {
-    fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
-        if let Some(cached) = self.cache.get(&addr) {
-            *block = *cached;
+        pub fn sync(
+            &mut self,
+            storage: &mut impl Storage,
+            start: BlockAddr,
+        ) -> fs::error::Result<()> {
+            for &(start, count) in &self.deallocs {
+                self.inner.deallocate(start, count)?;
+            }
+            self.allocs.clear();
+            Filesystem::write_block_alloc(storage, self.inner, start)?;
             Ok(())
-        } else {
-            self.inner.read_at(block, addr)
         }
     }
 
-    fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
-        self.cache.insert(addr, *block);
-        Ok(())
+    impl<'a> Allocator for BufAllocator<'a> {
+        fn allocate(&mut self, count: u64) -> Result<BlockAddr> {
+            let start = self.inner.allocate(count)?;
+            self.allocs.push((start, count));
+            Ok(start)
+        }
+
+        fn deallocate(&mut self, start: BlockAddr, count: u64) -> Result<()> {
+            self.deallocs.push((start, count));
+            Ok(())
+        }
+
+        fn available(&self) -> u64 {
+            let to_dealloc: u64 = self.deallocs.iter().map(|(_, count)| count).sum();
+            self.inner.available() + to_dealloc
+        }
     }
 
-    fn capacity(&self) -> Result<u64> {
-        self.inner.capacity()
+    impl<'a> Drop for BufAllocator<'a> {
+        fn drop(&mut self) {
+            for &(start, count) in &self.allocs {
+                let _ = self.inner.deallocate(start, count);
+            }
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub use storage::BufStorage;
 
-    use crate::block::storage::map::MapStorage;
+pub mod storage {
+    use std::collections::BTreeMap;
 
-    #[test]
-    fn reads_from_inner() {
-        let mut inner = MapStorage::default();
-        let mut write_block = Block::default();
-        write_block.data.fill(0xAB);
-        inner.write_at(&write_block, 0).unwrap();
+    use crate::{
+        block::{
+            Block, BlockAddr,
+            storage::{Result, Storage},
+        },
+        fs,
+    };
 
-        let cached = BufStorage::new(&mut inner);
-
-        let mut read_block = Block::default();
-        cached.read_at(&mut read_block, 0).unwrap();
-        assert_eq!(read_block.data, write_block.data);
+    pub struct BufStorage<'a, S> {
+        inner: &'a mut S,
+        cache: BTreeMap<BlockAddr, Block>,
     }
 
-    #[test]
-    fn buffers_writes() {
-        let mut inner = MapStorage::default();
-        let mut cached = BufStorage::new(&mut inner);
+    impl<'a, S: Storage> BufStorage<'a, S> {
+        pub fn new(inner: &'a mut S) -> Self {
+            Self {
+                inner,
+                cache: Default::default(),
+            }
+        }
 
-        let mut write_block = Block::default();
-        write_block.data.fill(0xAB);
-        cached.write_at(&write_block, 0).unwrap();
-
-        let mut read_block = Block::default();
-        cached.read_at(&mut read_block, 0).unwrap();
-        assert_eq!(read_block.data, write_block.data);
-
-        let mut inner_read_block = Block::default();
-        assert!(cached.inner.read_at(&mut inner_read_block, 0).is_err());
+        pub fn sync(&mut self) -> fs::error::Result<()> {
+            for (addr, block) in &self.cache {
+                self.inner.write_at(block, *addr)?;
+            }
+            Ok(())
+        }
     }
 
-    #[test]
-    fn syncs_writes_to_inner() {
-        let mut inner = MapStorage::default();
-        let mut cached = BufStorage::new(&mut inner);
+    impl<S: Storage> Storage for BufStorage<'_, S> {
+        fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
+            if let Some(cached) = self.cache.get(&addr) {
+                *block = *cached;
+                Ok(())
+            } else {
+                self.inner.read_at(block, addr)
+            }
+        }
 
-        let mut write_block_1 = Block::default();
-        let mut write_block_2 = Block::default();
+        fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
+            self.cache.insert(addr, *block);
+            Ok(())
+        }
 
-        write_block_1.data.fill(0xAB);
-        write_block_2.data.fill(0xCD);
+        fn capacity(&self) -> Result<u64> {
+            self.inner.capacity()
+        }
+    }
 
-        cached.write_at(&write_block_1, 0).unwrap();
-        cached.write_at(&write_block_2, 1).unwrap();
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-        cached.sync().unwrap();
+        use crate::block::storage::map::MapStorage;
 
-        let mut inner_read_block_1 = Block::default();
-        let mut inner_read_block_2 = Block::default();
+        #[test]
+        fn reads_from_inner() {
+            let mut inner = MapStorage::default();
+            let mut write_block = Block::default();
+            write_block.data.fill(0xAB);
+            inner.write_at(&write_block, 0).unwrap();
 
-        cached.inner.read_at(&mut inner_read_block_1, 0).unwrap();
-        cached.inner.read_at(&mut inner_read_block_2, 1).unwrap();
+            let cached = BufStorage::new(&mut inner);
 
-        assert_eq!(inner_read_block_1.data, write_block_1.data);
-        assert_eq!(inner_read_block_2.data, write_block_2.data);
+            let mut read_block = Block::default();
+            cached.read_at(&mut read_block, 0).unwrap();
+            assert_eq!(read_block.data, write_block.data);
+        }
+
+        #[test]
+        fn buffers_writes() {
+            let mut inner = MapStorage::default();
+            let mut cached = BufStorage::new(&mut inner);
+
+            let mut write_block = Block::default();
+            write_block.data.fill(0xAB);
+            cached.write_at(&write_block, 0).unwrap();
+
+            let mut read_block = Block::default();
+            cached.read_at(&mut read_block, 0).unwrap();
+            assert_eq!(read_block.data, write_block.data);
+
+            let mut inner_read_block = Block::default();
+            assert!(cached.inner.read_at(&mut inner_read_block, 0).is_err());
+        }
+
+        #[test]
+        fn syncs_writes_to_inner() {
+            let mut inner = MapStorage::default();
+            let mut cached = BufStorage::new(&mut inner);
+
+            let mut write_block_1 = Block::default();
+            let mut write_block_2 = Block::default();
+
+            write_block_1.data.fill(0xAB);
+            write_block_2.data.fill(0xCD);
+
+            cached.write_at(&write_block_1, 0).unwrap();
+            cached.write_at(&write_block_2, 1).unwrap();
+
+            cached.sync().unwrap();
+
+            let mut inner_read_block_1 = Block::default();
+            let mut inner_read_block_2 = Block::default();
+
+            cached.inner.read_at(&mut inner_read_block_1, 0).unwrap();
+            cached.inner.read_at(&mut inner_read_block_2, 1).unwrap();
+
+            assert_eq!(inner_read_block_1.data, write_block_1.data);
+            assert_eq!(inner_read_block_2.data, write_block_2.data);
+        }
     }
 }

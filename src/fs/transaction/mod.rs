@@ -2,7 +2,7 @@ mod buf;
 use buf::*;
 
 use crate::{
-    block::{allocator::bitmap::BitmapAllocator, storage::Storage},
+    block::storage::Storage,
     fs::{
         Filesystem,
         error::Result,
@@ -18,32 +18,29 @@ use crate::{
 
 /// Filesystem operation that buffers changes in memory before commiting them to persistent storage.
 pub struct Transaction<'a, S: Storage> {
-    fs_superblock: &'a mut Superblock,
-    fs_block_alloc: &'a mut BitmapAllocator,
-    // TODO: Replace full clones with caching changes only
-    superblock: Superblock,
-    block_alloc: BitmapAllocator,
     storage: BufStorage<'a, S>,
+    fs_superblock: &'a mut Superblock,
+    superblock: Superblock,
+    block_alloc: BufAllocator<'a>,
 }
 
 impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
     pub(super) fn new(fs: &'a mut Filesystem<S>) -> Self {
-        let block_alloc = fs.block_alloc.clone();
         let superblock = fs.superblock.clone();
         Self {
-            fs_superblock: &mut fs.superblock,
-            fs_block_alloc: &mut fs.block_alloc,
-            superblock,
-            block_alloc,
             storage: BufStorage::new(&mut fs.storage),
+            fs_superblock: &mut fs.superblock,
+            superblock,
+            block_alloc: BufAllocator::new(&mut fs.block_alloc),
         }
     }
 
     /// Commits the transaction to storage, consuming itself.
     pub(super) fn commit(mut self) -> Result<()> {
         self.sync_superblock()?;
-        self.sync_allocator()?;
+        self.block_alloc
+            .sync(&mut self.storage, self.superblock.block_alloc_start)?;
         self.storage.sync()?;
         Ok(())
     }
@@ -52,12 +49,6 @@ impl<'a, S: Storage> Transaction<'a, S> {
     fn sync_superblock(&mut self) -> Result<()> {
         Filesystem::write_superblock(&mut self.storage, &self.superblock)?;
         *self.fs_superblock = self.superblock.clone();
-        Ok(())
-    }
-
-    fn sync_allocator(&mut self) -> Result<()> {
-        Filesystem::write_block_alloc(&mut self.storage, &self.superblock, &self.block_alloc)?;
-        *self.fs_block_alloc = self.block_alloc.clone();
         Ok(())
     }
 

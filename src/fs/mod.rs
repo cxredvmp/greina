@@ -9,7 +9,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::{
     block::{
-        self, Allocator, BLOCK_SIZE, Block,
+        self, Allocator, BLOCK_SIZE, Block, BlockAddr,
         allocator::bitmap::BitmapAllocator,
         storage::{self, Storage},
     },
@@ -44,7 +44,7 @@ impl<S: Storage> Filesystem<S> {
         Self::format_root(&mut storage, &mut block_alloc, &mut superblock)?;
 
         Self::write_superblock(&mut storage, &superblock)?;
-        Self::write_block_alloc(&mut storage, &superblock, &block_alloc)?;
+        Self::write_block_alloc(&mut storage, &block_alloc, superblock.block_alloc_start)?;
 
         // Create filesystem
         let mut fs = Filesystem {
@@ -89,10 +89,10 @@ impl<S: Storage> Filesystem<S> {
 
     fn write_block_alloc(
         storage: &mut S,
-        superblock: &Superblock,
         block_alloc: &BitmapAllocator,
+        start: BlockAddr,
     ) -> storage::Result<()> {
-        let mut addr = superblock.block_alloc_start;
+        let mut addr = start;
         let bytes = block_alloc.as_bytes();
         let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
 
