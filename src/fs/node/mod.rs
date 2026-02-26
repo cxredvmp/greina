@@ -13,7 +13,7 @@ use zerocopy::{
 };
 
 use crate::{
-    block::{allocator::Allocator, storage::Storage},
+    block::{self, storage::Storage},
     fs::superblock::Superblock,
     tree::{DataType, Key, Tree},
 };
@@ -76,7 +76,7 @@ pub enum FileType {
 impl Node {
     pub fn create(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         filetype: FileType,
         links: u32,
@@ -88,7 +88,7 @@ impl Node {
         let key = Key::node(id);
         Tree::try_insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             node.as_bytes(),
@@ -106,14 +106,14 @@ impl Node {
     pub fn write(
         self,
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
     ) -> Result<()> {
         let key = Key::node(id);
         Tree::insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             self.as_bytes(),
@@ -123,20 +123,20 @@ impl Node {
 
     pub fn remove(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
     ) -> Result<()> {
         let key = Key::node(id);
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
             .ok_or(Error::NodeNotFound)?;
-        Self::deallocate(storage, allocator, superblock, id)?;
+        Self::deallocate(storage, block_alloc, superblock, id)?;
         Ok(())
     }
 
     fn deallocate(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
     ) -> Result<()> {
@@ -146,11 +146,11 @@ impl Node {
                 break;
             }
 
-            let bytes = Tree::remove(storage, allocator, &mut superblock.root_addr, key)?
+            let bytes = Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
                 .expect("extent exists because 'key' exists");
             let ext = Extent::read_from_bytes(&bytes).map_err(|_| Error::Uninterpretable)?;
 
-            allocator.deallocate(ext.start(), ext.len())?;
+            block_alloc.deallocate(ext.start(), ext.len())?;
         }
         Ok(())
     }

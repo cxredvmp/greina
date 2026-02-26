@@ -6,7 +6,7 @@ use std::{
 use fuser::{FileAttr, FileType, Filesystem};
 
 use crate::{
-    block::{BLOCK_SIZE, allocator::Allocator, storage::Storage},
+    block::{Allocator, BLOCK_SIZE, storage::Storage},
     fs::{
         self,
         node::{self, Node, NodeId, dir::NAME_MAX_LEN},
@@ -389,7 +389,7 @@ impl<S: Storage> Filesystem for Fuse<S> {
 
     fn statfs(&mut self, _req: &fuser::Request<'_>, _ino: u64, reply: fuser::ReplyStatfs) {
         let blocks = self.fs.superblock().block_count;
-        let blocks_free = self.fs.allocator().available();
+        let blocks_free = self.fs.block_alloc().available();
 
         reply.statfs(
             blocks,

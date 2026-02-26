@@ -1,7 +1,7 @@
 use zerocopy::{IntoBytes, TryFromBytes};
 
 use crate::{
-    block::{allocator::Allocator, storage::Storage},
+    block::{self, storage::Storage},
     tree::{DataType, Key, Tree},
 };
 
@@ -117,7 +117,7 @@ impl From<&DirEntryName> for String {
 impl DirEntry {
     pub fn create(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         filetype: FileType,
@@ -128,7 +128,7 @@ impl DirEntry {
         let key = Key::direntry(parent, entry.name.hash());
         Tree::try_insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             &entry.as_bytes(),
@@ -152,14 +152,14 @@ impl DirEntry {
     pub fn write(
         &self,
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
     ) -> Result<()> {
         let key = Key::direntry(parent, self.name.hash());
         Tree::insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             &self.as_bytes(),
@@ -169,7 +169,7 @@ impl DirEntry {
 
     pub fn link(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         id: NodeId,
@@ -182,7 +182,7 @@ impl DirEntry {
 
         DirEntry::create(
             storage,
-            allocator,
+            block_alloc,
             superblock,
             parent,
             node.filetype,
@@ -191,14 +191,14 @@ impl DirEntry {
         )?;
 
         node.links += 1;
-        node.write(storage, allocator, superblock, id)?;
+        node.write(storage, block_alloc, superblock, id)?;
 
         Ok(())
     }
 
     pub fn unlink(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         name: &DirEntryName,
@@ -213,14 +213,14 @@ impl DirEntry {
 
         let mut node = Node::read(storage, superblock, entry.id)?;
 
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
             .expect("entry exists because 'bytes' is 'Some'");
 
         node.links -= 1;
         if node.links == 0 {
-            Node::remove(storage, allocator, superblock, entry.id)?;
+            Node::remove(storage, block_alloc, superblock, entry.id)?;
         } else {
-            node.write(storage, allocator, superblock, entry.id)?;
+            node.write(storage, block_alloc, superblock, entry.id)?;
         }
 
         Ok(())
@@ -228,7 +228,7 @@ impl DirEntry {
 
     pub fn rename(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         old_parent: NodeId,
         old_name: &DirEntryName,
@@ -257,18 +257,18 @@ impl DirEntry {
                 id: new_parent,
                 name: DirEntryName::parent(),
             };
-            parent_entry.write(storage, allocator, superblock, entry.id)?;
+            parent_entry.write(storage, block_alloc, superblock, entry.id)?;
         }
 
         let key = Key::direntry(old_parent, old_name_hash);
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?;
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?;
 
         entry.name = new_name.clone();
 
         let key = Key::direntry(new_parent, new_name_hash);
         Tree::try_insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             &entry.as_bytes(),
@@ -308,7 +308,7 @@ pub struct Dir;
 impl Dir {
     pub fn create(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         name: DirEntryName,
@@ -317,11 +317,11 @@ impl Dir {
             return Err(Error::DirEntryExists);
         }
 
-        let id = Node::create(storage, allocator, superblock, FileType::Dir, 1)?;
+        let id = Node::create(storage, block_alloc, superblock, FileType::Dir, 1)?;
 
         DirEntry::create(
             storage,
-            allocator,
+            block_alloc,
             superblock,
             parent,
             FileType::Dir,
@@ -331,7 +331,7 @@ impl Dir {
 
         DirEntry::create(
             storage,
-            allocator,
+            block_alloc,
             superblock,
             id,
             FileType::Dir,
@@ -341,7 +341,7 @@ impl Dir {
 
         DirEntry::create(
             storage,
-            allocator,
+            block_alloc,
             superblock,
             id,
             FileType::Dir,
@@ -354,7 +354,7 @@ impl Dir {
 
     pub fn remove(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         name: &str,
@@ -371,14 +371,14 @@ impl Dir {
         }
 
         let key = Key::direntry(entry.id, DirEntryName::itself_hash());
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?;
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?;
         let key = Key::direntry(entry.id, DirEntryName::parent_hash());
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?;
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?;
 
         let key = Key::direntry(parent, name.hash());
-        Tree::remove(storage, allocator, &mut superblock.root_addr, key)?;
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?;
 
-        Node::remove(storage, allocator, superblock, entry.id)?;
+        Node::remove(storage, block_alloc, superblock, entry.id)?;
 
         Ok(entry.id)
     }

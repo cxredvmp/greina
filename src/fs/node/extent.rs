@@ -75,7 +75,7 @@ impl MappedExtent {
 
     pub fn ensure(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
         offset: u64,
@@ -90,7 +90,7 @@ impl MappedExtent {
         let len = end - start;
 
         let ext_len = len.div_ceil(BLOCK_SIZE);
-        let ext_start = allocator.allocate(ext_len)?;
+        let ext_start = block_alloc.allocate(ext_len)?;
         let ext = Extent::new(ext_start, ext_len);
 
         let len = ext_len * BLOCK_SIZE;
@@ -98,7 +98,7 @@ impl MappedExtent {
         let key = Key::extent(id, start);
         Tree::try_insert(
             storage,
-            allocator,
+            block_alloc,
             &mut superblock.root_addr,
             key,
             ext.as_bytes(),

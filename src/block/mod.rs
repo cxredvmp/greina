@@ -1,4 +1,8 @@
 pub mod allocator;
+
+pub use allocator::Allocator;
+pub use allocator::bitmap::BitmapAllocator;
+
 pub mod storage;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, little_endian::U64};

@@ -19,23 +19,23 @@ use crate::{
 /// Filesystem operation that buffers changes in memory before commiting them to persistent storage.
 pub struct Transaction<'a, S: Storage> {
     fs_superblock: &'a mut Superblock,
-    fs_allocator: &'a mut BitmapAllocator,
+    fs_block_alloc: &'a mut BitmapAllocator,
     // TODO: Replace full clones with caching changes only
     superblock: Superblock,
-    allocator: BitmapAllocator,
+    block_alloc: BitmapAllocator,
     storage: CachedStorage<'a, S>,
 }
 
 impl<'a, S: Storage> Transaction<'a, S> {
     /// Constructs a `Transaction` for a given filesystem.
     pub(super) fn new(fs: &'a mut Filesystem<S>) -> Self {
-        let allocator = fs.allocator.clone();
+        let block_alloc = fs.block_alloc.clone();
         let superblock = fs.superblock.clone();
         Self {
             fs_superblock: &mut fs.superblock,
-            fs_allocator: &mut fs.allocator,
+            fs_block_alloc: &mut fs.block_alloc,
             superblock,
-            allocator,
+            block_alloc,
             storage: CachedStorage::new(&mut fs.storage),
         }
     }
@@ -56,15 +56,15 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     fn sync_allocator(&mut self) -> Result<()> {
-        Filesystem::write_allocator(&mut self.storage, &self.superblock, &self.allocator)?;
-        *self.fs_allocator = self.allocator.clone();
+        Filesystem::write_block_alloc(&mut self.storage, &self.superblock, &self.block_alloc)?;
+        *self.fs_block_alloc = self.block_alloc.clone();
         Ok(())
     }
 
     pub fn create_node(&mut self, filetype: FileType, links: u32) -> Result<NodeId> {
         Node::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             filetype,
             links,
@@ -78,7 +78,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn write_node(&mut self, node: &Node, id: NodeId) -> Result<()> {
         node.write(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             id,
         )
@@ -87,7 +87,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn remove_node(&mut self, id: NodeId) -> Result<()> {
         Node::remove(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             id,
         )
@@ -102,7 +102,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let name = DirEntryName::try_from(name)?;
         Dir::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             name,
@@ -112,7 +112,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn remove_dir(&mut self, parent: NodeId, name: &str) -> Result<NodeId> {
         Dir::remove(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             name,
@@ -126,7 +126,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn create_root_dir(&mut self) -> Result<NodeId> {
         let id = Node::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             FileType::Dir,
             1,
@@ -136,7 +136,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
         DirEntry::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             id,
             FileType::Dir,
@@ -146,7 +146,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
 
         DirEntry::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             id,
             FileType::Dir,
@@ -165,7 +165,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     ) -> Result<NodeId> {
         File::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             filetype,
@@ -180,7 +180,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn write_file_at(&mut self, id: NodeId, offset: u64, buf: &[u8]) -> Result<u64> {
         File::write_at(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             id,
             offset,
@@ -199,7 +199,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     pub fn create_symlink(&mut self, parent: NodeId, name: &str, target: &str) -> Result<NodeId> {
         Symlink::create(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             name,
@@ -215,7 +215,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let name = DirEntryName::try_from(name)?;
         DirEntry::link(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             id,
@@ -227,7 +227,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let name = DirEntryName::try_from(name)?;
         DirEntry::unlink(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             parent,
             &name,
@@ -245,7 +245,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         let new_name = DirEntryName::try_from(new_name)?;
         DirEntry::rename(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.superblock,
             old_parent,
             &old_name,

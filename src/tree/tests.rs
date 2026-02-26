@@ -4,11 +4,7 @@ use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
 use crate::{
-    block::{
-        BLOCK_SIZE,
-        allocator::{Allocator, set::SetAllocator},
-        storage::map::MapStorage,
-    },
+    block::{Allocator, BLOCK_SIZE, allocator::set::SetAllocator, storage::map::MapStorage},
     fs::node::NodeId,
     key, keys,
 };
@@ -112,7 +108,7 @@ impl ReferenceStateMachine for TreeStateReference {
 
 struct TreeState {
     storage: MapStorage,
-    allocator: SetAllocator,
+    block_alloc: SetAllocator,
     root_addr: BlockAddr,
 }
 
@@ -124,7 +120,7 @@ impl TreeState {
     fn insert(&mut self, key: Key, data: &[u8]) -> Result<()> {
         Tree::try_insert(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.root_addr,
             key,
             &data,
@@ -134,7 +130,7 @@ impl TreeState {
     fn remove(&mut self, key: Key) -> Result<Option<Box<[u8]>>> {
         Tree::remove(
             &mut self.storage,
-            &mut self.allocator,
+            &mut self.block_alloc,
             &mut self.root_addr,
             key,
         )
@@ -144,8 +140,8 @@ impl TreeState {
 impl Default for TreeState {
     fn default() -> Self {
         let mut storage = MapStorage::default();
-        let mut allocator = SetAllocator::default();
-        let root_addr = allocator
+        let mut block_alloc = SetAllocator::default();
+        let root_addr = block_alloc
             .allocate(1)
             .expect("must be able to allocate root");
         let mut block = Block::default();
@@ -155,7 +151,7 @@ impl Default for TreeState {
             .expect("must be able to write root");
         Self {
             storage,
-            allocator,
+            block_alloc,
             root_addr,
         }
     }

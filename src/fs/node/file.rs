@@ -8,15 +8,15 @@ pub struct File;
 impl File {
     pub fn create(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         filetype: FileType,
         name: &str,
     ) -> Result<NodeId> {
         let name = DirEntryName::try_from(name)?;
-        let id = Node::create(storage, allocator, superblock, filetype, 1)?;
-        DirEntry::create(storage, allocator, superblock, parent, filetype, id, name)?;
+        let id = Node::create(storage, block_alloc, superblock, filetype, 1)?;
+        DirEntry::create(storage, block_alloc, superblock, parent, filetype, id, name)?;
         Ok(id)
     }
 
@@ -83,7 +83,7 @@ impl File {
 
     pub fn write_at(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
         mut offset: u64,
@@ -95,8 +95,14 @@ impl File {
         let mut block = Block::default();
 
         while !buf.is_empty() {
-            let map =
-                MappedExtent::ensure(storage, allocator, superblock, id, offset, buf.len() as u64)?;
+            let map = MappedExtent::ensure(
+                storage,
+                block_alloc,
+                superblock,
+                id,
+                offset,
+                buf.len() as u64,
+            )?;
 
             let avail_in_ext = map.end() - offset;
             let mut remain_in_ext = avail_in_ext.min(buf.len() as u64);
@@ -138,7 +144,7 @@ impl File {
 
         if offset > node.size.get() {
             node.size.set(offset);
-            node.write(storage, allocator, superblock, id)?;
+            node.write(storage, block_alloc, superblock, id)?;
         }
 
         Ok(written)

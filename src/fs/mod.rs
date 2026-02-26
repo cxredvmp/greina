@@ -1,5 +1,6 @@
 pub mod error;
 use error::*;
+
 pub mod node;
 pub mod superblock;
 pub mod transaction;
@@ -8,8 +9,8 @@ use zerocopy::{FromBytes, IntoBytes};
 
 use crate::{
     block::{
-        BLOCK_SIZE, Block,
-        allocator::{Allocator, bitmap::BitmapAllocator},
+        self, Allocator, BLOCK_SIZE, Block,
+        allocator::bitmap::BitmapAllocator,
         storage::{self, Storage},
     },
     fs::{
@@ -24,7 +25,7 @@ use crate::{
 pub struct Filesystem<S: Storage> {
     storage: S,
     superblock: Superblock,
-    allocator: BitmapAllocator,
+    block_alloc: BitmapAllocator,
 }
 
 impl<S: Storage> Filesystem<S> {
@@ -35,21 +36,21 @@ impl<S: Storage> Filesystem<S> {
     pub fn format(mut storage: S) -> Result<Self> {
         let block_count = storage.capacity()?;
 
-        let mut allocator = BitmapAllocator::new(block_count);
-        Self::allocate_superblock(&mut allocator);
-        Self::allocate_allocator(&mut allocator, block_count);
+        let mut block_alloc = BitmapAllocator::new(block_count);
+        Self::allocate_superblock(&mut block_alloc);
+        Self::allocate_block_alloc(&mut block_alloc, block_count);
 
         let mut superblock = Superblock::new(block_count);
-        Self::format_root(&mut storage, &mut allocator, &mut superblock)?;
+        Self::format_root(&mut storage, &mut block_alloc, &mut superblock)?;
 
         Self::write_superblock(&mut storage, &superblock)?;
-        Self::write_allocator(&mut storage, &superblock, &allocator)?;
+        Self::write_block_alloc(&mut storage, &superblock, &block_alloc)?;
 
         // Create filesystem
         let mut fs = Filesystem {
             storage,
             superblock,
-            allocator,
+            block_alloc,
         };
 
         {
@@ -65,8 +66,10 @@ impl<S: Storage> Filesystem<S> {
         Ok(fs)
     }
 
-    fn allocate_superblock(allocator: &mut BitmapAllocator) {
-        let addr = allocator.allocate(1).expect("superblock must be allocated");
+    fn allocate_superblock(block_alloc: &mut BitmapAllocator) {
+        let addr = block_alloc
+            .allocate(1)
+            .expect("superblock must be allocated");
         assert_eq!(addr, 0, "superblock must be at address 0");
     }
 
@@ -75,22 +78,22 @@ impl<S: Storage> Filesystem<S> {
         storage.write_at(&block, SUPER_ADDR)
     }
 
-    fn allocate_allocator(allocator: &mut BitmapAllocator, block_count: u64) {
+    fn allocate_block_alloc(block_alloc: &mut BitmapAllocator, block_count: u64) {
         let bytes = block_count.div_ceil(8);
         let blocks = bytes.div_ceil(BLOCK_SIZE);
-        let addr = allocator
+        let addr = block_alloc
             .allocate(blocks)
             .expect("allocator must be allocated");
         assert_eq!(addr, 1, "allocator must start at address 1");
     }
 
-    fn write_allocator(
+    fn write_block_alloc(
         storage: &mut S,
         superblock: &Superblock,
-        allocator: &BitmapAllocator,
+        block_alloc: &BitmapAllocator,
     ) -> storage::Result<()> {
-        let mut addr = superblock.allocator_start;
-        let bytes = allocator.as_bytes();
+        let mut addr = superblock.block_alloc_start;
+        let bytes = block_alloc.as_bytes();
         let (chunks, remainder) = bytes.as_chunks::<{ BLOCK_SIZE as usize }>();
 
         for chunk in chunks {
@@ -109,10 +112,10 @@ impl<S: Storage> Filesystem<S> {
 
     fn format_root(
         storage: &mut S,
-        allocator: &mut BitmapAllocator,
+        block_alloc: &mut BitmapAllocator,
         superblock: &mut Superblock,
     ) -> storage::Result<()> {
-        let root_addr = allocator.allocate(1).expect("must allocate root");
+        let root_addr = block_alloc.allocate(1).expect("must allocate root");
         Tree::format(storage, root_addr).expect("must format root");
         superblock.root_addr = root_addr;
         Ok(())
@@ -127,11 +130,11 @@ impl<S: Storage> Filesystem<S> {
         if superblock.signature != *superblock::SIGNATURE {
             return Err(libc::EINVAL);
         }
-        let allocator = Self::read_allocator(&mut storage, &superblock)?;
+        let block_alloc = Self::read_block_alloc(&mut storage, &superblock)?;
         Ok(Self {
             storage,
             superblock,
-            allocator,
+            block_alloc,
         })
     }
 
@@ -143,7 +146,7 @@ impl<S: Storage> Filesystem<S> {
         Ok(superblock)
     }
 
-    fn read_allocator(
+    fn read_block_alloc(
         storage: &mut S,
         superblock: &Superblock,
     ) -> storage::Result<BitmapAllocator> {
@@ -151,7 +154,7 @@ impl<S: Storage> Filesystem<S> {
         let blocks = bytes.div_ceil(BLOCK_SIZE);
 
         let mut blocks = vec![Block::default(); blocks as usize];
-        let mut addr = superblock.allocator_start;
+        let mut addr = superblock.block_alloc_start;
         for block in &mut blocks {
             storage.read_at(block, addr)?;
             addr += 1;
@@ -178,7 +181,7 @@ impl<S: Storage> Filesystem<S> {
         &self.superblock
     }
 
-    pub fn allocator(&self) -> &impl Allocator {
-        &self.allocator
+    pub fn block_alloc(&self) -> &impl block::Allocator {
+        &self.block_alloc
     }
 }

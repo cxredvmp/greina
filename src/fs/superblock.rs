@@ -19,25 +19,25 @@ pub struct Superblock {
     pub signature: [u8; 8],
     pub block_count: u64,
     pub next_node_id: u64,
-    pub allocator_start: BlockAddr,
+    pub block_alloc_start: BlockAddr,
     pub root_addr: BlockAddr,
 }
 
 impl Superblock {
     /// Constructs a superblock with given block and node count.
     pub fn new(block_count: u64) -> Self {
-        let allocator_bytes = block_count.div_ceil(8);
-        let allocator_blocks = allocator_bytes.div_ceil(BLOCK_SIZE);
+        let block_alloc_bytes = block_count.div_ceil(8);
+        let block_alloc_blocks = block_alloc_bytes.div_ceil(BLOCK_SIZE);
 
         // Superblock lives at address 0
-        let allocator_start = 1;
-        let root_addr = allocator_start + allocator_blocks;
+        let block_alloc_start = 1;
+        let root_addr = block_alloc_start + block_alloc_blocks;
 
         Self {
             signature: *SIGNATURE,
             block_count,
             next_node_id: 1,
-            allocator_start,
+            block_alloc_start,
             root_addr,
         }
     }

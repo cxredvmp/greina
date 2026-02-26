@@ -1,4 +1,4 @@
-use crate::block::{allocator::Allocator, storage::Storage};
+use crate::block::{self, storage::Storage};
 
 use super::*;
 use file::*;
@@ -8,7 +8,7 @@ pub struct Symlink;
 impl Symlink {
     pub fn create(
         storage: &mut impl Storage,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         parent: NodeId,
         name: &str,
@@ -16,13 +16,13 @@ impl Symlink {
     ) -> Result<NodeId> {
         let id = File::create(
             storage,
-            allocator,
+            block_alloc,
             superblock,
             parent,
             FileType::Symlink,
             name,
         )?;
-        File::write_at(storage, allocator, superblock, id, 0, target.as_bytes())?;
+        File::write_at(storage, block_alloc, superblock, id, 0, target.as_bytes())?;
         Ok(id)
     }
 

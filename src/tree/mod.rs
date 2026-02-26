@@ -8,11 +8,7 @@ use node::*;
 
 use std::marker::PhantomData;
 
-use crate::block::{
-    Block, BlockAddr,
-    allocator::{self, Allocator},
-    storage::Storage,
-};
+use crate::block::{self, Block, BlockAddr, allocator, storage::Storage};
 
 pub const DATA_MAX_LEN: usize = 512;
 
@@ -73,14 +69,14 @@ where
 
     pub fn insert(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: &mut BlockAddr,
         key: Key,
         data: &[u8],
     ) -> Result<Option<Box<[u8]>>> {
         // TODO: This is an inefficient and unsafe temporary solution
-        let target_data = Self::remove(storage, allocator, root_addr, key)?;
-        match Self::try_insert(storage, allocator, root_addr, key, data) {
+        let target_data = Self::remove(storage, block_alloc, root_addr, key)?;
+        match Self::try_insert(storage, block_alloc, root_addr, key, data) {
             Ok(()) => Ok(target_data),
             Err(Error::Occupied) => unreachable!(),
             Err(e) => Err(e),
@@ -89,7 +85,7 @@ where
 
     pub fn try_insert(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: &mut BlockAddr,
         key: Key,
         data: &[u8],
@@ -98,22 +94,22 @@ where
             return Err(Error::DataTooLong);
         }
 
-        match Self::insert_recursive(storage, allocator, *root_addr, key, data)? {
+        match Self::insert_recursive(storage, block_alloc, *root_addr, key, data)? {
             InsertOutcome::Done => Ok(()),
             InsertOutcome::LowerBoundChanged(_) => Ok(()),
             InsertOutcome::Split(result) => {
-                Self::handle_split_root(storage, allocator, root_addr, result)
+                Self::handle_split_root(storage, block_alloc, root_addr, result)
             }
             InsertOutcome::SplitAndLowerBoundChanged {
                 result,
                 lower_bound: _,
-            } => Self::handle_split_root(storage, allocator, root_addr, result),
+            } => Self::handle_split_root(storage, block_alloc, root_addr, result),
         }
     }
 
     fn handle_split_root(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: &mut BlockAddr,
         result: SplitOutcome,
     ) -> Result<()> {
@@ -125,7 +121,7 @@ where
                 NodeVariant::Leaf(old_root) => (old_root.lower_bound(), old_root.height()),
             };
 
-        let new_root_addr = allocator.allocate(1)?;
+        let new_root_addr = block_alloc.allocate(1)?;
         let mut new_root_block = Block::default();
         let mut new_root = Branch::format(&mut new_root_block, old_root_height + 1);
 
@@ -144,7 +140,7 @@ where
 
     fn insert_recursive(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         addr: BlockAddr,
         key: Key,
         data: &[u8],
@@ -157,11 +153,11 @@ where
                 let child_idx = branch.child_idx_for(key);
                 let child_addr = branch.child_at(child_idx).expect("child must exist");
 
-                match Self::insert_recursive(storage, allocator, child_addr, key, data)? {
+                match Self::insert_recursive(storage, block_alloc, child_addr, key, data)? {
                     InsertOutcome::Done => Ok(InsertOutcome::Done),
 
                     InsertOutcome::Split(result) => {
-                        Self::handle_split_child(storage, allocator, &mut branch, addr, result)
+                        Self::handle_split_child(storage, block_alloc, &mut branch, addr, result)
                     }
 
                     InsertOutcome::LowerBoundChanged(child_lower_bound) => {
@@ -187,7 +183,7 @@ where
                         )?;
                         let split_result = Self::handle_split_child(
                             storage,
-                            allocator,
+                            block_alloc,
                             &mut branch,
                             addr,
                             child_result,
@@ -219,7 +215,7 @@ where
                 }
 
                 Err(InsertError::Overflow) => {
-                    let result = Self::handle_overflow(storage, allocator, &mut leaf, addr)?;
+                    let result = Self::handle_overflow(storage, block_alloc, &mut leaf, addr)?;
                     Self::handle_split_leaf(storage, &mut leaf, addr, key, data, result)
                 }
 
@@ -247,14 +243,14 @@ where
 
     fn handle_overflow<I: Item>(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         node: &mut Node<&mut Block, I>,
         node_addr: BlockAddr,
     ) -> Result<SplitOutcome>
     where
         for<'a> Node<&'a mut Block, I>: Split<Item = I>,
     {
-        let right_addr = allocator.allocate(1)?;
+        let right_addr = block_alloc.allocate(1)?;
         let mut right_block = Block::default();
         let mut right = Node::<&mut Block, I>::format(&mut right_block, node.height());
 
@@ -272,7 +268,7 @@ where
 
     fn handle_split_child(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         branch: &mut Branch<&mut Block>,
         branch_addr: BlockAddr,
         child_result: SplitOutcome,
@@ -286,7 +282,7 @@ where
             }
 
             Err(InsertError::Overflow) => {
-                let mut result = Self::handle_overflow(storage, allocator, branch, branch_addr)?;
+                let mut result = Self::handle_overflow(storage, block_alloc, branch, branch_addr)?;
                 if child_result.right_lower_bound < result.right_lower_bound {
                     branch
                         .insert(child_result.right_lower_bound, child_result.right_addr)
@@ -353,13 +349,13 @@ where
 
     pub fn remove(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: &mut BlockAddr,
         key: Key,
     ) -> Result<Option<Box<[u8]>>> {
-        match Self::remove_recursive(storage, allocator, *root_addr, key)? {
+        match Self::remove_recursive(storage, block_alloc, *root_addr, key)? {
             RemoveOutcome::BecameDeficient(data) => {
-                Self::handle_deficient_root(storage, allocator, root_addr)?;
+                Self::handle_deficient_root(storage, block_alloc, root_addr)?;
                 Ok(data)
             }
 
@@ -369,7 +365,7 @@ where
 
     fn handle_deficient_root(
         storage: &S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: &mut BlockAddr,
     ) -> Result<()> {
         let mut block = Block::default();
@@ -378,7 +374,7 @@ where
             NodeVariant::Branch(root) => {
                 if root.item_count() == 1 {
                     let child_addr = root.child_at(0).expect("must have a child");
-                    allocator.deallocate(*root_addr, 1)?;
+                    block_alloc.deallocate(*root_addr, 1)?;
                     *root_addr = child_addr;
                 }
                 Ok(())
@@ -390,7 +386,7 @@ where
 
     fn remove_recursive(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         root_addr: BlockAddr,
         key: Key,
     ) -> Result<RemoveOutcome> {
@@ -402,7 +398,7 @@ where
                 let child_idx = branch.child_idx_for(key);
                 let child_addr = branch.child_at(child_idx).expect("must have a child");
 
-                let data = match Self::remove_recursive(storage, allocator, child_addr, key)? {
+                let data = match Self::remove_recursive(storage, block_alloc, child_addr, key)? {
                     RemoveOutcome::BecameDeficient(data) => {
                         let mut child_block = Block::default();
                         storage.read_at(&mut child_block, child_addr)?;
@@ -410,7 +406,7 @@ where
                         match NodeVariant::try_new(&mut child_block)? {
                             NodeVariant::Branch(mut child) => Self::handle_deficient(
                                 storage,
-                                allocator,
+                                block_alloc,
                                 &mut branch,
                                 root_addr,
                                 &mut child,
@@ -420,7 +416,7 @@ where
 
                             NodeVariant::Leaf(mut child) => Self::handle_deficient(
                                 storage,
-                                allocator,
+                                block_alloc,
                                 &mut branch,
                                 root_addr,
                                 &mut child,
@@ -457,7 +453,7 @@ where
 
     fn handle_deficient<I: Item>(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         child: &mut Node<&mut Block, I>,
@@ -477,7 +473,7 @@ where
 
             if Self::rotate(
                 storage,
-                allocator,
+                block_alloc,
                 parent,
                 parent_addr,
                 child,
@@ -499,7 +495,7 @@ where
 
             Self::rotate(
                 storage,
-                allocator,
+                block_alloc,
                 parent,
                 parent_addr,
                 &mut left,
@@ -516,7 +512,7 @@ where
 
     fn rotate<I: Item>(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         left: &mut Node<&mut Block, I>,
@@ -537,7 +533,7 @@ where
         if let Err(RotateError::SiblingBecomesDeficient) = result {
             return Self::merge(
                 storage,
-                allocator,
+                block_alloc,
                 parent,
                 parent_addr,
                 left,
@@ -559,7 +555,7 @@ where
 
     fn merge<I: Item>(
         storage: &mut S,
-        allocator: &mut impl Allocator,
+        block_alloc: &mut impl block::Allocator,
         parent: &mut Branch<&mut Block>,
         parent_addr: BlockAddr,
         left: &mut Node<&mut Block, I>,
@@ -580,7 +576,7 @@ where
         storage.write_at(left.block(), left_addr)?;
         storage.write_at(parent.block(), parent_addr)?;
 
-        allocator.deallocate(right_addr, 1)?;
+        block_alloc.deallocate(right_addr, 1)?;
 
         Ok(true)
     }
