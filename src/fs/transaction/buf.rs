@@ -5,12 +5,12 @@ use crate::block::{
     storage::{Result, Storage},
 };
 
-pub(super) struct CachedStorage<'a, S> {
+pub(super) struct BufStorage<'a, S> {
     inner: &'a mut S,
     cache: BTreeMap<BlockAddr, Block>,
 }
 
-impl<'a, S: Storage> CachedStorage<'a, S> {
+impl<'a, S: Storage> BufStorage<'a, S> {
     pub(super) fn new(inner: &'a mut S) -> Self {
         Self {
             inner,
@@ -26,7 +26,7 @@ impl<'a, S: Storage> CachedStorage<'a, S> {
     }
 }
 
-impl<S: Storage> Storage for CachedStorage<'_, S> {
+impl<S: Storage> Storage for BufStorage<'_, S> {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
         if let Some(cached) = self.cache.get(&addr) {
             *block = *cached;
@@ -59,7 +59,7 @@ mod tests {
         write_block.data.fill(0xAB);
         inner.write_at(&write_block, 0).unwrap();
 
-        let cached = CachedStorage::new(&mut inner);
+        let cached = BufStorage::new(&mut inner);
 
         let mut read_block = Block::default();
         cached.read_at(&mut read_block, 0).unwrap();
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn buffers_writes() {
         let mut inner = MapStorage::default();
-        let mut cached = CachedStorage::new(&mut inner);
+        let mut cached = BufStorage::new(&mut inner);
 
         let mut write_block = Block::default();
         write_block.data.fill(0xAB);
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn syncs_writes_to_inner() {
         let mut inner = MapStorage::default();
-        let mut cached = CachedStorage::new(&mut inner);
+        let mut cached = BufStorage::new(&mut inner);
 
         let mut write_block_1 = Block::default();
         let mut write_block_2 = Block::default();

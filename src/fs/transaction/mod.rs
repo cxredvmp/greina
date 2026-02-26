@@ -1,5 +1,5 @@
-mod cached;
-use cached::*;
+mod buf;
+use buf::*;
 
 use crate::{
     block::{allocator::bitmap::BitmapAllocator, storage::Storage},
@@ -23,7 +23,7 @@ pub struct Transaction<'a, S: Storage> {
     // TODO: Replace full clones with caching changes only
     superblock: Superblock,
     block_alloc: BitmapAllocator,
-    storage: CachedStorage<'a, S>,
+    storage: BufStorage<'a, S>,
 }
 
 impl<'a, S: Storage> Transaction<'a, S> {
@@ -36,7 +36,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
             fs_block_alloc: &mut fs.block_alloc,
             superblock,
             block_alloc,
-            storage: CachedStorage::new(&mut fs.storage),
+            storage: BufStorage::new(&mut fs.storage),
         }
     }
 
