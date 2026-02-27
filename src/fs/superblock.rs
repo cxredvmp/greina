@@ -43,6 +43,7 @@ impl Superblock {
     }
 
     pub fn allocate_node(&mut self) -> NodeId {
+        // NOTE: This wraps around after u64::MAX, possibly allocating used node ids.
         let id = self.next_node_id;
         self.next_node_id += 1;
         NodeId::new(id)

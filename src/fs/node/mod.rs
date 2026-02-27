@@ -81,8 +81,6 @@ impl Node {
         filetype: FileType,
         links: u32,
     ) -> Result<NodeId> {
-        // TODO: This can fail if we exceed u64::MAX,
-        // wrap around and start allocating possible existing node ids.
         let id = superblock.allocate_node();
         let node = Self::new(filetype, links);
         let key = Key::node(id);
