@@ -25,6 +25,9 @@ pub enum Error {
     NotDir,
     InvalidMove,
 
+    // File
+    NotFile,
+
     // Symlink
     NotSymlink,
 }
@@ -71,6 +74,7 @@ impl From<Error> for libc::c_int {
             Error::IsDir => libc::EISDIR,
             Error::NotDir => libc::ENOTDIR,
             Error::InvalidMove => libc::EINVAL,
+            Error::NotFile => libc::EINVAL,
             Error::NotSymlink => libc::EINVAL,
         }
     }

@@ -1,5 +1,3 @@
-use crate::block::{BLOCK_SIZE, Block};
-
 use super::*;
 use dir::*;
 
@@ -148,5 +146,48 @@ impl File {
         }
 
         Ok(written)
+    }
+
+    pub fn truncate(
+        storage: &mut impl Storage,
+        block_alloc: &mut impl block::Allocator,
+        superblock: &mut Superblock,
+        id: NodeId,
+        size: u64,
+    ) -> Result<()> {
+        let mut node = Node::read(storage, superblock, id)?;
+
+        if node.filetype != FileType::File {
+            return Err(Error::NotFile);
+        }
+
+        if size < node.size.get() {
+            Node::truncate_extents(storage, block_alloc, superblock, id, size)?;
+
+            let remain = size % BLOCK_SIZE;
+            if remain != 0 {
+                if let Some(map) = MappedExtent::read(storage, superblock, id, size)? {
+                    let addr = map.inner.start() + map.inner.len() - 1;
+                    Self::zero_block_tail(storage, addr, remain)?;
+                }
+            }
+        }
+
+        node.size.set(size);
+        node.write(storage, block_alloc, superblock, id)?;
+
+        Ok(())
+    }
+
+    pub fn zero_block_tail(storage: &mut impl Storage, addr: BlockAddr, remain: u64) -> Result<()> {
+        let mut block = Block::default();
+        storage.read_at(&mut block, addr)?;
+
+        let start = usize::try_from(remain).unwrap();
+        (&mut block.data[start..]).fill(0);
+
+        storage.write_at(&block, addr)?;
+
+        Ok(())
     }
 }

@@ -180,11 +180,13 @@ impl<'a, S: Storage> Transaction<'a, S> {
     }
 
     pub fn truncate_file(&mut self, id: NodeId, size: u64) -> Result<()> {
-        // TODO: Check if the node is a file
-        // TODO: Deallocate extents
-        let mut node = self.read_node(id)?;
-        node.size.set(size);
-        self.write_node(&node, id)
+        File::truncate(
+            &mut self.storage,
+            &mut self.block_alloc,
+            &mut self.superblock,
+            id,
+            size,
+        )
     }
 
     pub fn create_symlink(&mut self, parent: NodeId, name: &str, target: &str) -> Result<NodeId> {

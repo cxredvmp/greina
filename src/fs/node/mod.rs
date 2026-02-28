@@ -8,12 +8,12 @@ pub mod symlink;
 use super::error::*;
 
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, TryFromBytes, Unaligned,
+    FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, Unaligned,
     little_endian::{U32, U64},
 };
 
 use crate::{
-    block::{self, storage::Storage},
+    block::{self, BLOCK_SIZE, Block, BlockAddr, storage::Storage},
     fs::superblock::Superblock,
     tree::{DataType, Key, Tree},
 };
@@ -44,7 +44,7 @@ impl NodeId {
 /// A filesystem object.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
-#[derive(TryFromBytes, IntoBytes, Immutable, Unaligned)]
+#[derive(TryFromBytes, IntoBytes, Immutable, Unaligned, KnownLayout)]
 pub struct Node {
     pub size: U64,
     pub filetype: FileType,
@@ -125,30 +125,61 @@ impl Node {
         superblock: &mut Superblock,
         id: NodeId,
     ) -> Result<()> {
+        let node = Self::read(storage, superblock, id)?;
+
+        if node.filetype == FileType::File || node.filetype == FileType::Symlink {
+            Self::truncate_extents(storage, block_alloc, superblock, id, 0)?;
+        }
+
         let key = Key::node(id);
-        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
-            .ok_or(Error::NodeNotFound)?;
-        Self::deallocate(storage, block_alloc, superblock, id)?;
+        Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?;
+
         Ok(())
     }
 
-    fn deallocate(
+    /// Deallocates extents past 'size'.
+    fn truncate_extents(
         storage: &mut impl Storage,
         block_alloc: &mut impl block::Allocator,
         superblock: &mut Superblock,
         id: NodeId,
+        size: u64,
     ) -> Result<()> {
         let key = Key::extent(id, u64::MAX);
-        while let Some((key, _)) = Tree::get_le(storage, superblock.root_addr, key)? {
+        while let Some((key, bytes)) = Tree::get_le(storage, superblock.root_addr, key)? {
             if key.id != id || key.datatype != DataType::Extent {
                 break;
             }
 
-            let bytes = Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
-                .expect("extent exists because 'key' exists");
-            let ext = Extent::read_from_bytes(&bytes).map_err(|_| Error::Uninterpretable)?;
+            if key.offset() >= size {
+                Tree::remove(storage, block_alloc, &mut superblock.root_addr, key)?
+                    .expect("extent exists because 'key' exists");
+                let ext = Extent::read_from_bytes(&bytes).map_err(|_| Error::Uninterpretable)?;
+                block_alloc.deallocate(ext.start(), ext.len())?;
+            } else {
+                let mut ext =
+                    Extent::read_from_bytes(&bytes).map_err(|_| Error::Uninterpretable)?;
 
-            block_alloc.deallocate(ext.start(), ext.len())?;
+                let keep_bytes = size - key.offset();
+                let keep_blocks = keep_bytes.div_ceil(BLOCK_SIZE);
+
+                if keep_blocks < ext.len() {
+                    let free_blocks = ext.len() - keep_blocks;
+                    let free_start = ext.start() + keep_blocks;
+                    block_alloc.deallocate(free_start, free_blocks)?;
+
+                    ext.len.set(keep_blocks);
+                    Tree::insert(
+                        storage,
+                        block_alloc,
+                        &mut superblock.root_addr,
+                        key,
+                        ext.as_bytes(),
+                    )?;
+                }
+
+                break;
+            }
         }
         Ok(())
     }
