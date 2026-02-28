@@ -39,40 +39,52 @@ impl File {
         let mut block = Block::default();
 
         while !buf.is_empty() {
-            let map = MappedExtent::read(storage, superblock, id, offset)?
-                .expect("offset is within file size, so extent must exist");
+            if let Some(map) = MappedExtent::read(storage, superblock, id, offset)? {
+                let avail_in_ext = map.end() - offset;
+                let mut remain_in_ext = avail_in_ext.min(buf.len() as u64);
 
-            let avail_in_ext = map.end() - offset;
-            let mut remain_in_ext = avail_in_ext.min(buf.len() as u64);
+                let offset_in_ext = offset - map.start;
+                let mut block_idx = offset_in_ext / BLOCK_SIZE;
+                let mut offset_in_block = offset_in_ext % BLOCK_SIZE;
 
-            let offset_in_ext = offset - map.start;
-            let mut block_idx = offset_in_ext / BLOCK_SIZE;
-            let mut offset_in_block = offset_in_ext % BLOCK_SIZE;
+                while remain_in_ext != 0 {
+                    let addr = map.inner.start() + block_idx;
 
-            while remain_in_ext != 0 {
-                let addr = map.inner.start() + block_idx;
+                    let remain_in_block = BLOCK_SIZE - offset_in_block;
+                    let chunk_size = remain_in_block.min(remain_in_ext);
 
+                    storage.read_at(&mut block, addr)?;
+
+                    let dst_end = chunk_size as usize;
+                    let (dst, remain) = buf.split_at_mut(dst_end);
+
+                    let src_start = offset_in_block as usize;
+                    let src_end = src_start + chunk_size as usize;
+                    let src = &block.data[src_start..src_end];
+
+                    dst.copy_from_slice(src);
+
+                    buf = remain;
+                    read += chunk_size;
+                    offset += chunk_size;
+                    remain_in_ext -= chunk_size;
+
+                    offset_in_block = 0;
+                    block_idx += 1;
+                }
+            } else {
+                let offset_in_block = offset % BLOCK_SIZE;
                 let remain_in_block = BLOCK_SIZE - offset_in_block;
-                let chunk_size = remain_in_block.min(remain_in_ext);
-
-                storage.read_at(&mut block, addr)?;
+                let chunk_size = remain_in_block.min(buf.len() as u64);
 
                 let dst_end = chunk_size as usize;
                 let (dst, remain) = buf.split_at_mut(dst_end);
 
-                let src_start = offset_in_block as usize;
-                let src_end = src_start + chunk_size as usize;
-                let src = &block.data[src_start..src_end];
-
-                dst.copy_from_slice(src);
+                dst.fill(0);
 
                 buf = remain;
                 read += chunk_size;
                 offset += chunk_size;
-                remain_in_ext -= chunk_size;
-
-                offset_in_block = 0;
-                block_idx += 1;
             }
         }
 
