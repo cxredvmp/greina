@@ -95,15 +95,54 @@ fn test_file() {
     let root = &ctx.mount_path;
     let file_path = root.join("hello.txt");
 
+    // Create, write and read
+    const WRITE_CONTENTS: &[u8] = b"Hello from Greina!";
     {
         let mut file = File::create(&file_path).expect("failed to create file");
-        file.write_all(b"Hello from Greina!")
+        file.write_all(WRITE_CONTENTS)
             .expect("failed to write to file");
     }
 
-    let content = fs::read_to_string(&file_path).expect("failed to read file");
-    assert_eq!(content, "Hello from Greina!");
+    const WRITE_LEN: u64 = WRITE_CONTENTS.len() as u64;
+    assert_eq!(fs::metadata(&file_path).unwrap().len(), WRITE_LEN);
 
+    let read_contents = fs::read(&file_path).expect("failed to read file");
+    assert_eq!(read_contents, WRITE_CONTENTS);
+
+    // Truncate (shrink)
+    const SHRINK_LEN: u64 = 5;
+    {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&file_path)
+            .expect("failed to open file for shrinking");
+        file.set_len(SHRINK_LEN).expect("failed to shrink file");
+    }
+
+    assert_eq!(fs::metadata(&file_path).unwrap().len(), SHRINK_LEN);
+
+    let read_contents = fs::read(&file_path).expect("failed to read shrunk file");
+    let mut truncated_contents = WRITE_CONTENTS.to_vec();
+    truncated_contents.truncate(SHRINK_LEN as usize);
+    assert_eq!(read_contents, truncated_contents);
+
+    // Truncate (extend)
+    const EXTEND_LEN: u64 = 10;
+    {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&file_path)
+            .expect("failed to open file for extension");
+        file.set_len(EXTEND_LEN).expect("failed to expand file");
+    }
+
+    assert_eq!(fs::metadata(&file_path).unwrap().len(), EXTEND_LEN);
+
+    let read_contents = fs::read(&file_path).expect("failed to read extended file");
+    truncated_contents.resize(EXTEND_LEN as usize, 0);
+    assert_eq!(read_contents, truncated_contents);
+
+    // Remove
     fs::remove_file(&file_path).expect("failed to remove file");
     assert!(!file_path.exists());
 }
