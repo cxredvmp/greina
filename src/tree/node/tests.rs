@@ -26,7 +26,7 @@ macro_rules! keys {
 
 macro_rules! node {
     ($node_type:ident, $height:expr) => {{
-        let block = Block::default();
+        let block = Box::new(Block::default());
         $node_type::format(block, $height)
     }};
 }

@@ -2,9 +2,9 @@
 mod tests;
 
 use std::{
-    borrow::{Borrow, BorrowMut},
     fmt::Debug,
     marker::PhantomData,
+    ops::{Deref, DerefMut},
 };
 
 use zerocopy::{
@@ -19,18 +19,21 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(super) enum NodeVariant<B: Borrow<Block>> {
+pub(super) enum NodeVariant<B>
+where
+    B: Deref<Target = Block>,
+{
     Branch(Branch<B>),
     Leaf(Leaf<B>),
 }
 
 impl<B> NodeVariant<B>
 where
-    B: Borrow<Block>,
+    B: Deref<Target = Block>,
 {
     pub(super) fn try_new(block: B) -> Result<Self, Error> {
-        let (header, _) = Header::try_ref_from_prefix(&block.borrow().data)
-            .map_err(|_| Error::Uninterpretable)?;
+        let (header, _) =
+            Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
         let node = if header.height.get() == 0 {
             Self::Leaf(Leaf::try_new(block)?)
         } else {
@@ -61,19 +64,16 @@ pub(super) struct Node<B, I> {
 
 impl<B, I> Node<B, I>
 where
-    B: Borrow<Block>,
+    B: Deref<Target = Block>,
     I: Item,
 {
     pub(super) const ITEM_SIZE: usize = size_of::<I>();
 
     pub(super) fn try_new(block: B) -> Result<Self, Error> {
-        let (header, _) = Header::try_ref_from_prefix(&block.borrow().data)
+        let (header, _) =
+            Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
+        <[I]>::try_ref_from_prefix_with_elems(&block.data[HEADER_SIZE..], header.item_count.into())
             .map_err(|_| Error::Uninterpretable)?;
-        <[I]>::try_ref_from_prefix_with_elems(
-            &block.borrow().data[HEADER_SIZE..],
-            header.item_count.into(),
-        )
-        .map_err(|_| Error::Uninterpretable)?;
         Ok(Self {
             block,
             _item_type: PhantomData,
@@ -81,11 +81,11 @@ where
     }
 
     pub(super) fn block(&self) -> &Block {
-        self.block.borrow()
+        &self.block
     }
 
     fn data(&self) -> &[u8; BLOCK_SIZE as usize] {
-        &self.block.borrow().data
+        &self.block.data
     }
 
     fn header(&self) -> &Header {
@@ -163,19 +163,19 @@ where
 
 impl<B, I> Node<B, I>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
     I: Item,
 {
     /// Formats the block as an empty node of given height and returns a handle to it.
     pub(super) fn format(mut block: B, height: u16) -> Self {
         let mut header = Header::default();
         header.height.set(height);
-        block.borrow_mut().data[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+        block.data[..HEADER_SIZE].copy_from_slice(header.as_bytes());
         Self::try_new(block).expect("'block' must be a valid node")
     }
 
     fn data_mut(&mut self) -> &mut [u8; BLOCK_SIZE as usize] {
-        &mut self.block.borrow_mut().data
+        &mut self.block.data
     }
 
     fn header_mut(&mut self) -> &mut Header {
@@ -258,7 +258,7 @@ where
 
     fn take_items_from_right<U>(&mut self, right: &mut Node<U, I>, count: u16)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         let items_to_take = &right.items()[..count.into()];
         self.insert_items_back(items_to_take);
@@ -278,7 +278,7 @@ where
 
     fn take_items_from_left<U>(&mut self, left: &mut Node<U, I>, count: u16)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         let old_count = left.item_count();
         let new_count = old_count - count;
@@ -294,7 +294,7 @@ pub(super) type Branch<B> = Node<B, BranchItem>;
 
 impl<B> Branch<B>
 where
-    B: Borrow<Block>,
+    B: Deref<Target = Block>,
 {
     const ITEM_OCCUPANCY_THRESH: u16 = OCCUPANCY_THRESH.div_ceil(Self::ITEM_SIZE) as u16;
 
@@ -322,7 +322,7 @@ where
 
 impl<B> Branch<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     /// Constructs an item with a child and inserts it.
     pub(super) fn insert(&mut self, key: Key, child: BlockAddr) -> Result<(), InsertError> {
@@ -357,7 +357,7 @@ pub(super) type Leaf<B> = Node<B, LeafItem>;
 
 impl<B> Leaf<B>
 where
-    B: Borrow<Block>,
+    B: Deref<Target = Block>,
 {
     /// Returns a reference to the data associated with the item.
     fn get_for_item(&self, item: &LeafItem) -> &[u8] {
@@ -379,7 +379,7 @@ where
 
 impl<B> Leaf<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     /// Constructs an item (an item and data) and inserts it.
     pub(super) fn insert(&mut self, key: Key, data: &[u8]) -> Result<(), InsertError> {
@@ -472,7 +472,7 @@ where
         items: impl Iterator<Item = &'a LeafItem>,
     ) -> u16
     where
-        U: Borrow<Block>,
+        U: Deref<Target = Block>,
     {
         let mut self_used = self.used_space();
         let mut sibling_used = sibling.used_space();
@@ -526,7 +526,7 @@ where
         items: impl Iterator<Item = &'a LeafItem>,
         strategy: F,
     ) where
-        U: Borrow<Block>,
+        U: Deref<Target = Block>,
         F: Fn(&mut Self, Key, &[u8]),
     {
         items.for_each(|item| {
@@ -538,7 +538,7 @@ where
     /// Moves the last `count` items of `left` into `self`.
     fn take_from_left<U>(&mut self, left: &mut Leaf<U>, count: u16)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         let left_new_count = left.item_count() - count;
         let move_items = &left.items()[left_new_count.into()..];
@@ -556,7 +556,7 @@ where
     /// Moves the first `count` items of `right` into `self`.
     fn take_from_right<U>(&mut self, right: &mut Leaf<U>, count: u16)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         let move_items = &right.items()[..count.into()];
 
@@ -745,28 +745,28 @@ pub(super) trait Rotate {
     /// Replenishes `self` by taking some items from `right`.
     fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>;
+        U: DerefMut<Target = Block>;
 
     /// Replenishes `self` by taking some items from `left`.
     fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>;
+        U: DerefMut<Target = Block>;
 
     /// Copies `right`'s items into `self`.
     fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
     where
-        U: Borrow<Block>;
+        U: Deref<Target = Block>;
 }
 
 impl<B> Rotate for Branch<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     type Item = BranchItem;
 
     fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(self.is_deficient(), "'self' must be deficient");
 
@@ -783,7 +783,7 @@ where
 
     fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(self.is_deficient(), "'self' must be deficient");
 
@@ -800,7 +800,7 @@ where
 
     fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
     where
-        U: Borrow<Block>,
+        U: Deref<Target = Block>,
     {
         debug_assert!(
             self.is_deficient() || right.is_deficient(),
@@ -819,13 +819,13 @@ where
 
 impl<B> Rotate for Leaf<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     type Item = LeafItem;
 
     fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(self.is_deficient(), "'self' must be deficient");
 
@@ -840,7 +840,7 @@ where
 
     fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(self.is_deficient(), "'self' must be deficient");
 
@@ -855,7 +855,7 @@ where
 
     fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
     where
-        U: Borrow<Block>,
+        U: Deref<Target = Block>,
     {
         debug_assert!(
             self.is_deficient() || right.is_deficient(),
@@ -883,18 +883,18 @@ pub(super) trait Split {
     /// Moves the second half of items from `self` into `right`.
     fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
     where
-        U: Borrow<Block> + BorrowMut<Block>;
+        U: DerefMut<Target = Block>;
 }
 
 impl<B> Split for Branch<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     type Item = BranchItem;
 
     fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(
             self.item_count() > 1,
@@ -911,13 +911,13 @@ where
 
 impl<B> Split for Leaf<B>
 where
-    B: Borrow<Block> + BorrowMut<Block>,
+    B: DerefMut<Target = Block>,
 {
     type Item = LeafItem;
 
     fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
     where
-        U: Borrow<Block> + BorrowMut<Block>,
+        U: DerefMut<Target = Block>,
     {
         debug_assert!(self.item_count() >= 2, "'self' must have at least 2 items");
         debug_assert_eq!(right.item_count(), 0, "'right' must be empty");
@@ -929,7 +929,7 @@ where
 
 impl<B, I> Debug for Node<B, I>
 where
-    B: Borrow<Block>,
+    B: Deref<Target = Block>,
     I: Item,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
