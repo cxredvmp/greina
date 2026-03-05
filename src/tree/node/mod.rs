@@ -3,7 +3,6 @@ mod tests;
 
 use std::{
     fmt::Debug,
-    marker::PhantomData,
     ops::{Deref, DerefMut},
 };
 
@@ -18,87 +17,41 @@ use crate::{
     tree::{Error, InsertError, MergeError, RotateError},
 };
 
-#[derive(Debug)]
-pub(super) enum NodeVariant<B>
-where
-    B: Deref<Target = Block>,
-{
-    Branch(Branch<B>),
-    Leaf(Leaf<B>),
+pub enum NodeKind {
+    Branch,
+    Leaf,
 }
 
-impl<B> NodeVariant<B>
-where
-    B: Deref<Target = Block>,
-{
-    pub(super) fn try_new(block: B) -> Result<Self, Error> {
+impl NodeKind {
+    pub fn try_new(block: &Block) -> Result<Self, Error> {
         let (header, _) =
             Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
         let node = if header.height.get() == 0 {
-            Self::Leaf(Leaf::try_new(block)?)
+            Self::Leaf
         } else {
-            Self::Branch(Branch::try_new(block)?)
+            Self::Branch
         };
         Ok(node)
     }
 }
 
-pub(super) const NODE_CAPACITY: usize = BLOCK_SIZE as usize - HEADER_SIZE;
-
-const OCCUPANCY_THRESH: usize = NODE_CAPACITY / 2;
-
-const fn is_deficient(used_space: usize) -> bool {
-    used_space < OCCUPANCY_THRESH
-}
+impl Node<BranchItem> for &Block {}
+impl Node<LeafItem> for &Block {}
 
 /// A handle to the tree's node.
 /// Items in a node are guaranteed to be sorted by key.
-///
-/// # Type parameters
-/// - `B` determines whether the handle is mutable or immutable.
-/// - `I` determines whether the node is a branch or a leaf node.
-pub(super) struct Node<B, I> {
-    block: B,
-    _item_type: PhantomData<I>,
-}
-
-impl<B, I> Node<B, I>
-where
-    B: Deref<Target = Block>,
-    I: Item,
-{
-    pub(super) const ITEM_SIZE: usize = size_of::<I>();
-
-    pub(super) fn try_new(block: B) -> Result<Self, Error> {
-        let (header, _) =
-            Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
-        <[I]>::try_ref_from_prefix_with_elems(&block.data[HEADER_SIZE..], header.item_count.into())
-            .map_err(|_| Error::Uninterpretable)?;
-        Ok(Self {
-            block,
-            _item_type: PhantomData,
-        })
-    }
-
-    pub(super) fn block(&self) -> &Block {
-        &self.block
-    }
-
-    fn data(&self) -> &[u8; BLOCK_SIZE as usize] {
-        &self.block.data
-    }
-
+pub trait Node<I: Item>: Deref<Target = Block> {
     fn header(&self) -> &Header {
-        let (header, _) = Header::try_ref_from_prefix(&self.data()[..HEADER_SIZE])
+        let (header, _) = Header::try_ref_from_prefix(&self.data[..Header::SIZE])
             .expect("'self.data' must hold a valid header");
         header
     }
 
-    pub(super) fn height(&self) -> u16 {
+    fn height(&self) -> u16 {
         self.header().height.get()
     }
 
-    pub(super) fn item_count(&self) -> u16 {
+    fn item_count(&self) -> u16 {
         self.header().item_count.get()
     }
 
@@ -106,227 +59,209 @@ where
         self.header().data_offset.get()
     }
 
-    /// # Panics
-    /// Panics if there are no items.
-    pub(super) fn lower_bound(&self) -> Key {
-        self.items()[0].key()
-    }
-
-    pub(super) fn is_deficient(&self) -> bool {
-        is_deficient(self.used_space())
-    }
-
     fn items(&self) -> &[I] {
         let count: usize = self.header().item_count.into();
-        let (items, _) = <[I]>::try_ref_from_prefix_with_elems(&self.data()[HEADER_SIZE..], count)
+        let (items, _) = <[I]>::try_ref_from_prefix_with_elems(&self.data[Header::SIZE..], count)
             .expect("'self.data' must hold a valid item list");
         items
     }
 
-    fn get_item_idx(&self, key: Key) -> Option<usize> {
+    fn lower_bound(&self) -> Key {
+        self.items()[0].key()
+    }
+
+    fn get_item_index(&self, key: Key) -> Option<usize> {
         self.items()
             .binary_search_by_key(&key, |item| item.key())
             .ok()
     }
 
-    fn get_item_idx_le(&self, key: Key) -> Option<usize> {
+    fn get_item_index_le(&self, key: Key) -> Option<usize> {
         let idx = self.items().partition_point(|item| item.key() <= key);
         if idx == 0 { None } else { Some(idx - 1) }
     }
 
     fn get_item(&self, key: Key) -> Option<&I> {
-        self.get_item_idx(key).map(|idx| &self.items()[idx])
+        self.get_item_index(key).map(|idx| &self.items()[idx])
     }
 
     fn get_item_le(&self, key: Key) -> Option<&I> {
-        self.get_item_idx_le(key).map(|idx| &self.items()[idx])
+        self.get_item_index_le(key).map(|idx| &self.items()[idx])
     }
 
     fn used_space(&self) -> usize {
-        let header = self.header();
-        let item_count: usize = header.item_count.get().into();
-        let items_size = item_count * Self::ITEM_SIZE;
-        let data_offset: usize = header.data_offset.get().into();
-        let data_size = BLOCK_SIZE as usize - data_offset;
+        let items_size = usize::from(self.item_count()) * I::SIZE;
+        let data_size = BLOCK_SIZE as usize - usize::from(self.data_offset());
         items_size + data_size
     }
 
+    const CAPACITY: usize = BLOCK_SIZE as usize - Header::SIZE;
+
     fn free_space(&self) -> usize {
-        NODE_CAPACITY - self.used_space()
+        Self::CAPACITY - self.used_space()
     }
 
-    fn can_insert(&self, item_count: usize, data_size: usize) -> bool {
-        let required = item_count * Self::ITEM_SIZE + data_size;
-        self.free_space() >= required
+    const OCCUPANCY_THRESH: usize = Self::CAPACITY / 2;
+
+    fn is_below_occupancy_threshold(used_space: usize) -> bool {
+        used_space < Self::OCCUPANCY_THRESH
+    }
+
+    fn is_deficient(&self) -> bool {
+        Self::is_below_occupancy_threshold(self.used_space())
     }
 }
 
-impl<B, I> Node<B, I>
-where
-    B: DerefMut<Target = Block>,
-    I: Item,
-{
-    /// Formats the block as an empty node of given height and returns a handle to it.
-    pub(super) fn format(mut block: B, height: u16) -> Self {
+impl<T, I: Item> Node<I> for T where T: NodeMut<I> {}
+impl NodeMut<BranchItem> for &mut Block {}
+impl NodeMut<LeafItem> for &mut Block {}
+
+pub trait NodeMut<I: Item>: Node<I> + DerefMut<Target = Block> {
+    /// Formats the block as an empty node of given height.
+    fn format_as_node(&mut self, height: u16) {
         let mut header = Header::default();
         header.height.set(height);
-        block.data[..HEADER_SIZE].copy_from_slice(header.as_bytes());
-        Self::try_new(block).expect("'block' must be a valid node")
-    }
-
-    fn data_mut(&mut self) -> &mut [u8; BLOCK_SIZE as usize] {
-        &mut self.block.data
+        self.data[..Header::SIZE].copy_from_slice(header.as_bytes());
     }
 
     fn header_mut(&mut self) -> &mut Header {
-        let (header, _) = Header::try_mut_from_prefix(&mut self.data_mut()[..HEADER_SIZE])
+        let (header, _) = Header::try_mut_from_prefix(&mut self.data[..Header::SIZE])
             .expect("'self.data' must hold a valid header");
         header
+    }
+
+    fn set_height(&mut self, value: u16) {
+        self.header_mut().height.set(value)
+    }
+
+    fn set_item_count(&mut self, value: u16) {
+        self.header_mut().item_count.set(value)
+    }
+
+    fn set_data_offset(&mut self, value: u16) {
+        self.header_mut().data_offset.set(value)
     }
 
     fn items_mut(&mut self) -> &mut [I] {
         let count = self.header().item_count.into();
         let (items, _) =
-            <[I]>::try_mut_from_prefix_with_elems(&mut self.data_mut()[HEADER_SIZE..], count)
+            <[I]>::try_mut_from_prefix_with_elems(&mut self.data[Header::SIZE..], count)
                 .expect("'self.data' must hold a valid item list");
         items
     }
 
-    fn insert_item(&mut self, item: I) -> Result<(), InsertError> {
-        let items = self.items_mut();
-        let idx = match items.binary_search_by_key(&item.key(), |item| item.key()) {
-            Ok(_) => return Err(InsertError::Occupied),
-            Err(idx) => idx,
-        };
-        let to_shift = items.len() - idx;
+    fn insert_items_at(&mut self, index: usize, items: &[I]) {
+        let count = items.len();
+        let old_count: usize = self.header().item_count.into();
+        let delta = count * I::SIZE;
 
         // Shift items
-        let start = HEADER_SIZE + idx * Self::ITEM_SIZE;
-        let end = start + to_shift * Self::ITEM_SIZE;
-        let dest = start + Self::ITEM_SIZE;
-        self.data_mut().copy_within(start..end, dest);
+        let start = Header::SIZE + index * I::SIZE;
+        let end = start + (old_count - index) * I::SIZE;
+        let dest = start + delta;
+        self.data.copy_within(start..end, dest);
 
-        self.data_mut()[start..dest].copy_from_slice(item.as_bytes());
+        self.data[start..dest].copy_from_slice(items.as_bytes());
 
-        self.header_mut().item_count += 1;
-
-        Ok(())
+        let new_count: u16 = (old_count + count).try_into().unwrap();
+        self.set_item_count(new_count);
     }
 
     fn insert_items_front(&mut self, items: &[I]) {
-        let old_count: usize = self.header().item_count.into();
-        let insert_count = items.len();
-        let insert_size = insert_count * Self::ITEM_SIZE;
-
-        // Shift items
-        let start = HEADER_SIZE;
-        let end = start + old_count * Self::ITEM_SIZE;
-        let dest = start + insert_size;
-        self.data_mut().copy_within(start..end, dest);
-
-        self.data_mut()[start..dest].copy_from_slice(items.as_bytes());
-
-        let new_count: u16 = (old_count + insert_count).try_into().unwrap();
-        self.header_mut().item_count.set(new_count);
+        self.insert_items_at(0, items);
     }
 
     fn insert_items_back(&mut self, items: &[I]) {
-        let old_count: usize = self.header().item_count.into();
-        let insert_count = items.len();
-        let insert_size = insert_count * Self::ITEM_SIZE;
-
-        let start = HEADER_SIZE + old_count * Self::ITEM_SIZE;
-        let end = start + insert_size;
-        self.data_mut()[start..end].copy_from_slice(items.as_bytes());
-
-        let new_count: u16 = (old_count + insert_count).try_into().unwrap();
-        self.header_mut().item_count.set(new_count);
+        let index = self.header().item_count.into();
+        self.insert_items_at(index, items);
     }
 
-    fn remove_item_at(&mut self, idx: usize) -> Option<I> {
-        let items = self.items_mut();
-        let target = *items.get(idx)?;
+    fn insert_item(&mut self, item: I) -> Result<(), InsertError> {
+        let index = match self
+            .items()
+            .binary_search_by_key(&item.key(), |item| item.key())
+        {
+            Ok(_) => return Err(InsertError::Occupied),
+            Err(index) => index,
+        };
+        self.insert_items_at(index, &[item]);
+        Ok(())
+    }
 
-        let next = idx + 1;
-        let to_shift = items.len() - next;
+    fn remove_items_at(&mut self, index: usize, count: usize) {
+        let old_count: usize = self.header().item_count.into();
+        let new_count = old_count - count;
+        let delta: usize = count * I::SIZE;
 
-        items.copy_within(next..(next + to_shift), idx);
-        self.header_mut().item_count -= 1;
+        // Shift items
+        let dest = Header::SIZE + index * I::SIZE;
+        let start = dest + delta;
+        let end = start + (new_count - index) * I::SIZE;
+        self.data.copy_within(start..end, dest);
 
+        let new_count: u16 = new_count.try_into().unwrap();
+        self.set_item_count(new_count);
+    }
+
+    fn remove_item_at(&mut self, index: usize) -> Option<I> {
+        let target = *self.items().get(index)?;
+        self.remove_items_at(index, 1);
         Some(target)
     }
 
-    fn take_items_from_right<U>(&mut self, right: &mut Node<U, I>, count: u16)
-    where
-        U: DerefMut<Target = Block>,
-    {
-        let items_to_take = &right.items()[..count.into()];
-        self.insert_items_back(items_to_take);
-
-        let old_count = right.item_count();
-        let new_count = old_count - count;
-
-        // Shift items
-        let taken_size = usize::from(count) * Self::ITEM_SIZE;
-        let dest = HEADER_SIZE;
-        let start = dest + taken_size;
-        let end = start + usize::from(new_count) * Self::ITEM_SIZE;
-        right.data_mut().copy_within(start..end, dest);
-
-        right.header_mut().item_count.set(new_count);
+    fn take_items_from_right(&mut self, right: &mut impl NodeMut<I>, count: usize) {
+        let items_take = &right.items()[..count.into()];
+        self.insert_items_back(items_take);
+        right.remove_items_at(0, count);
     }
 
-    fn take_items_from_left<U>(&mut self, left: &mut Node<U, I>, count: u16)
-    where
-        U: DerefMut<Target = Block>,
-    {
-        let old_count = left.item_count();
-        let new_count = old_count - count;
-
-        let items_to_take = &left.items()[new_count.into()..];
-        self.insert_items_front(items_to_take);
-
-        left.header_mut().item_count.set(new_count);
+    fn take_items_from_left(&mut self, left: &mut impl NodeMut<I>, count: usize) {
+        let index = usize::from(left.header().item_count) - count;
+        let items_take = &left.items()[index..];
+        self.insert_items_front(items_take);
+        left.remove_items_at(index, count);
     }
 }
 
-pub(super) type Branch<B> = Node<B, BranchItem>;
+impl Branch for &Block {}
 
-impl<B> Branch<B>
-where
-    B: Deref<Target = Block>,
-{
-    const ITEM_OCCUPANCY_THRESH: u16 = OCCUPANCY_THRESH.div_ceil(Self::ITEM_SIZE) as u16;
+pub trait Branch: Node<BranchItem> {
+    const ITEM_OCCUPANCY_THRESH: u16 = Self::OCCUPANCY_THRESH.div_ceil(BranchItem::SIZE) as u16;
 
-    const ITEM_CAPACITY: u16 = (NODE_CAPACITY / Self::ITEM_SIZE) as u16;
+    const ITEM_CAPACITY: u16 = (Self::CAPACITY / BranchItem::SIZE) as u16;
 
     /// Binary searches for the child that covers the given key.
     /// Returns the index of the item containing the child.
-    pub(super) fn child_idx_for(&self, key: Key) -> usize {
+    fn child_idx_for(&self, key: Key) -> usize {
         self.items()
             .partition_point(|item| item.key() <= key)
             .saturating_sub(1)
     }
 
     /// Returns the child of the item at index.
-    pub(super) fn child_at(&self, idx: usize) -> Option<BlockAddr> {
+    fn child_at(&self, idx: usize) -> Option<BlockAddr> {
         self.items().get(idx).map(|item| item.child.into())
     }
 
     /// Binary searches for the child that covers the given key.
     /// Returns the child.
-    pub(super) fn child_for(&self, key: Key) -> BlockAddr {
+    fn child_for(&self, key: Key) -> BlockAddr {
         self.items()[self.child_idx_for(key)].child.into()
+    }
+
+    fn can_insert(&self, item_count: usize) -> bool {
+        let required = item_count * BranchItem::SIZE;
+        self.free_space() >= required
     }
 }
 
-impl<B> Branch<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    /// Constructs an item with a child and inserts it.
-    pub(super) fn insert(&mut self, key: Key, child: BlockAddr) -> Result<(), InsertError> {
-        if !self.can_insert(1, 0) {
+impl<T> Branch for T where T: BranchMut {}
+impl BranchMut for &mut Block {}
+
+pub trait BranchMut: Branch + NodeMut<BranchItem> {
+    /// Constructs an item and inserts it.
+    fn insert(&mut self, key: Key, child: BlockAddr) -> Result<(), InsertError> {
+        if !self.can_insert(1) {
             return Err(InsertError::Overflow);
         }
         self.insert_item(BranchItem::new(key, child))
@@ -334,11 +269,11 @@ where
         Ok(())
     }
 
-    /// Removes the item at index, returning its child.
+    /// Removes the item at index, returning the child.
     ///
     /// # Panics
     /// Panics if the index is out of bounds.
-    pub(super) fn remove_at(&mut self, idx: usize) -> BlockAddr {
+    fn remove_at(&mut self, idx: usize) -> BlockAddr {
         self.remove_item_at(idx)
             .map(|item| item.child.into())
             .expect("must not remove inexisting child")
@@ -348,41 +283,41 @@ where
     ///
     /// # Panics
     /// Panics if the index is out of bounds.
-    pub(super) fn set_key_at(&mut self, idx: usize, key: Key) {
-        self.items_mut()[idx].key = key
+    fn set_key_at(&mut self, index: usize, key: Key) {
+        self.items_mut()[index].key = key
     }
 }
 
-pub(super) type Leaf<B> = Node<B, LeafItem>;
-
-impl<B> Leaf<B>
-where
-    B: Deref<Target = Block>,
-{
+pub trait Leaf: Node<LeafItem> {
     /// Returns a reference to the data associated with the item.
     fn get_for_item(&self, item: &LeafItem) -> &[u8] {
         let start = usize::from(item.offset);
         let end = start + usize::from(item.size);
-        &self.data()[start..end]
+        &self.data[start..end]
     }
 
     /// Returns a reference to the data associated with the item corresponding to the key.
-    pub(super) fn get(&self, key: Key) -> Option<&[u8]> {
+    fn get(&self, key: Key) -> Option<&[u8]> {
         self.get_item(key).map(|item| self.get_for_item(item))
     }
 
-    pub(super) fn get_le(&self, key: Key) -> Option<(Key, &[u8])> {
+    fn get_le(&self, key: Key) -> Option<(Key, &[u8])> {
         self.get_item_le(key)
             .map(|item| (item.key, self.get_for_item(item)))
     }
+
+    fn can_insert(&self, item_count: usize, data_size: usize) -> bool {
+        let required = item_count * LeafItem::SIZE + data_size;
+        self.free_space() >= required
+    }
 }
 
-impl<B> Leaf<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    /// Constructs an item (an item and data) and inserts it.
-    pub(super) fn insert(&mut self, key: Key, data: &[u8]) -> Result<(), InsertError> {
+impl<T> Leaf for T where T: LeafMut {}
+impl LeafMut for &mut Block {}
+
+pub trait LeafMut: Leaf + NodeMut<LeafItem> {
+    /// Constructs an item and inserts it and its data.
+    fn insert(&mut self, key: Key, data: &[u8]) -> Result<(), InsertError> {
         if !self.can_insert(1, data.len()) {
             return Err(InsertError::Overflow);
         }
@@ -397,13 +332,13 @@ where
         // Insert data
         let start = usize::from(offset);
         let end = start + usize::from(size);
-        self.data_mut()[start..end].copy_from_slice(data);
-        self.header_mut().data_offset.set(offset);
+        self.data[start..end].copy_from_slice(data);
+        self.set_data_offset(offset);
 
         Ok(())
     }
 
-    /// Constructs an item and inserts it using the given item insertion strategy.
+    /// Constructs an item and inserts it and its data using the given item insertion strategy.
     fn insert_with_strategy<F>(&mut self, key: Key, data: &[u8], strategy: F)
     where
         F: FnOnce(&mut Self, &[LeafItem]),
@@ -418,18 +353,18 @@ where
         // Insert data
         let start = usize::from(offset);
         let end = start + usize::from(size);
-        self.data_mut()[start..end].copy_from_slice(data);
-        self.header_mut().data_offset.set(offset);
-    }
-
-    /// Constructs an item and inserts it at the back.
-    fn insert_back(&mut self, key: Key, data: &[u8]) {
-        self.insert_with_strategy(key, data, |node, items| node.insert_items_back(items));
+        self.data[start..end].copy_from_slice(data);
+        self.set_data_offset(offset);
     }
 
     /// Constructs an item and inserts it at the front.
     fn insert_front(&mut self, key: Key, data: &[u8]) {
         self.insert_with_strategy(key, data, |node, items| node.insert_items_front(items));
+    }
+
+    /// Constructs an item and inserts it at the back.
+    fn insert_back(&mut self, key: Key, data: &[u8]) {
+        self.insert_with_strategy(key, data, |node, items| node.insert_items_back(items));
     }
 
     /// Removes the item at index, returning the data.
@@ -445,7 +380,7 @@ where
         if start != end {
             // Compact the data area
             let dest = start + usize::from(target.size);
-            self.data_mut().copy_within(start..end, dest);
+            self.data.copy_within(start..end, dest);
         }
 
         // Update the items' data offsets
@@ -460,33 +395,30 @@ where
     }
 
     /// Removes the item corresponding to the key.
-    pub(super) fn remove(&mut self, key: Key) -> Option<Box<[u8]>> {
-        self.remove_at(self.get_item_idx(key)?)
+    fn remove(&mut self, key: Key) -> Option<Box<[u8]>> {
+        self.remove_at(self.get_item_index(key)?)
     }
 
     /// Returns the number of items that needs to be taken from a sibling to replenish `self`.
     /// If can't replenish `self` without making `sibling` deficient, returns `0`.
-    fn rotate_count<'a, U>(
+    fn rotate_count<'a>(
         &self,
-        sibling: &Leaf<U>,
+        sibling: &impl Leaf,
         items: impl Iterator<Item = &'a LeafItem>,
-    ) -> u16
-    where
-        U: Deref<Target = Block>,
-    {
+    ) -> u16 {
         let mut self_used = self.used_space();
         let mut sibling_used = sibling.used_space();
 
         for (i, item) in items.enumerate() {
-            let diff = Self::ITEM_SIZE + usize::from(item.size);
+            let diff = LeafItem::SIZE + usize::from(item.size);
 
             sibling_used -= diff;
-            if is_deficient(sibling_used) {
+            if Self::is_below_occupancy_threshold(sibling_used) {
                 break;
             }
 
             self_used += diff;
-            if !is_deficient(self_used) {
+            if !Self::is_below_occupancy_threshold(self_used) {
                 return (i + 1) as u16;
             }
         }
@@ -503,7 +435,7 @@ where
         let mut best_imbalance = self_used;
 
         for (i, item) in self.items().iter().rev().enumerate() {
-            let diff = Self::ITEM_SIZE + usize::from(item.size);
+            let diff = LeafItem::SIZE + usize::from(item.size);
 
             self_used -= diff;
             right_used += diff;
@@ -520,13 +452,12 @@ where
         0
     }
 
-    fn copy_with_strategy<'a, U, F>(
+    fn copy_with_strategy<'a, F>(
         &mut self,
-        other: &Leaf<U>,
+        other: &impl Leaf,
         items: impl Iterator<Item = &'a LeafItem>,
         strategy: F,
     ) where
-        U: Deref<Target = Block>,
         F: Fn(&mut Self, Key, &[u8]),
     {
         items.for_each(|item| {
@@ -536,10 +467,7 @@ where
     }
 
     /// Moves the last `count` items of `left` into `self`.
-    fn take_from_left<U>(&mut self, left: &mut Leaf<U>, count: u16)
-    where
-        U: DerefMut<Target = Block>,
-    {
+    fn take_from_left(&mut self, left: &mut impl LeafMut, count: u16) {
         let left_new_count = left.item_count() - count;
         let move_items = &left.items()[left_new_count.into()..];
 
@@ -554,10 +482,7 @@ where
     }
 
     /// Moves the first `count` items of `right` into `self`.
-    fn take_from_right<U>(&mut self, right: &mut Leaf<U>, count: u16)
-    where
-        U: DerefMut<Target = Block>,
-    {
+    fn take_from_right(&mut self, right: &mut impl LeafMut, count: u16) {
         let move_items = &right.items()[..count.into()];
 
         self.copy_with_strategy(right, move_items.iter(), |node, key, data| {
@@ -570,7 +495,115 @@ where
     }
 }
 
-const HEADER_SIZE: usize = size_of::<Header>();
+pub trait Rotate<I: Item>: NodeMut<I> {
+    /// Replenishes `self` by taking some items from `right`.
+    fn rotate_left(&mut self, right: &mut Self) -> Result<(), RotateError>;
+
+    /// Replenishes `self` by taking some items from `left`.
+    fn rotate_right(&mut self, left: &mut Self) -> Result<(), RotateError>;
+
+    /// Copies `right`'s items into `self`.
+    fn merge(&mut self, right: &Self) -> Result<(), MergeError>;
+}
+
+impl<T> Rotate<BranchItem> for T
+where
+    T: BranchMut,
+{
+    fn rotate_left(&mut self, right: &mut Self) -> Result<(), RotateError> {
+        let req_count = Self::ITEM_OCCUPANCY_THRESH - self.item_count();
+        let right_count = right.item_count();
+
+        if (right_count.saturating_sub(req_count)) < Self::ITEM_OCCUPANCY_THRESH {
+            return Err(RotateError::SiblingBecomesDeficient);
+        }
+
+        self.take_items_from_right(right, req_count.into());
+        Ok(())
+    }
+
+    fn rotate_right(&mut self, left: &mut Self) -> Result<(), RotateError> {
+        let req_count = Self::ITEM_OCCUPANCY_THRESH - self.item_count();
+        let left_count = left.item_count();
+
+        if (left_count.saturating_sub(req_count)) < Self::ITEM_OCCUPANCY_THRESH {
+            return Err(RotateError::SiblingBecomesDeficient);
+        }
+
+        self.take_items_from_left(left, req_count.into());
+        Ok(())
+    }
+
+    fn merge(&mut self, right: &Self) -> Result<(), MergeError> {
+        self.insert_items_back(right.items());
+        Ok(())
+    }
+}
+
+impl<T> Rotate<LeafItem> for T
+where
+    T: LeafMut,
+{
+    fn rotate_left(&mut self, right: &mut Self) -> Result<(), RotateError> {
+        let count = self.rotate_count(right, right.items().iter());
+        if count == 0 {
+            return Err(RotateError::SiblingBecomesDeficient);
+        }
+
+        self.take_from_right(right, count);
+        Ok(())
+    }
+
+    fn rotate_right(&mut self, left: &mut Self) -> Result<(), RotateError> {
+        let count = self.rotate_count(left, left.items().iter().rev());
+        if count == 0 {
+            return Err(RotateError::SiblingBecomesDeficient);
+        }
+
+        self.take_from_left(left, count);
+        Ok(())
+    }
+
+    fn merge(&mut self, right: &Self) -> Result<(), MergeError> {
+        let right_items = right.items();
+        let right_data_size = BLOCK_SIZE as usize - usize::from(right.data_offset());
+
+        if !self.can_insert(right_items.len(), right_data_size) {
+            return Err(MergeError::Overflows);
+        }
+
+        self.copy_with_strategy(right, right_items.iter(), |node, key, data| {
+            node.insert_back(key, data)
+        });
+
+        Ok(())
+    }
+}
+
+pub(super) trait Split<I: Item>: NodeMut<I> {
+    /// Moves the second half of items from `self` into `right`.
+    fn split(&mut self, right: &mut Self);
+}
+
+impl<T> Split<BranchItem> for T
+where
+    T: BranchMut,
+{
+    fn split(&mut self, right: &mut Self) {
+        let count = usize::from(self.item_count() / 2);
+        right.take_items_from_left(self, count);
+    }
+}
+
+impl<T> Split<LeafItem> for T
+where
+    T: LeafMut,
+{
+    fn split(&mut self, right: &mut Self) {
+        let count = self.split_count();
+        right.take_from_left(self, count);
+    }
+}
 
 /// A header stored at the beginning of a node.
 #[repr(C)]
@@ -582,6 +615,10 @@ struct Header {
     item_count: U16,
     // The absolute offset of the data area in a leaf node
     data_offset: U16,
+}
+
+impl Header {
+    const SIZE: usize = size_of::<Self>();
 }
 
 impl Default for Header {
@@ -599,7 +636,7 @@ impl Default for Header {
 #[derive(Debug, Clone, Copy)]
 #[derive(TryFromBytes, IntoBytes, Immutable, Unaligned)]
 pub struct Key {
-    // The node this item is associated with
+    // The id of the node this item is associated with
     pub id: NodeId,
     pub datatype: DataType,
     // Additional information that depends on the data type
@@ -683,6 +720,8 @@ pub enum DataType {
 pub(super) trait Item:
     Debug + Clone + Copy + TryFromBytes + IntoBytes + Immutable + Unaligned
 {
+    const SIZE: usize = size_of::<Self>();
+
     fn key(&self) -> Key;
 }
 
@@ -736,208 +775,5 @@ impl LeafItem {
 impl Item for LeafItem {
     fn key(&self) -> Key {
         self.key
-    }
-}
-
-pub(super) trait Rotate {
-    type Item;
-
-    /// Replenishes `self` by taking some items from `right`.
-    fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>;
-
-    /// Replenishes `self` by taking some items from `left`.
-    fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>;
-
-    /// Copies `right`'s items into `self`.
-    fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
-    where
-        U: Deref<Target = Block>;
-}
-
-impl<B> Rotate for Branch<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    type Item = BranchItem;
-
-    fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(self.is_deficient(), "'self' must be deficient");
-
-        let req_count = Self::ITEM_OCCUPANCY_THRESH - self.item_count();
-        let right_count = right.item_count();
-
-        if (right_count.saturating_sub(req_count)) < Self::ITEM_OCCUPANCY_THRESH {
-            return Err(RotateError::SiblingBecomesDeficient);
-        }
-
-        self.take_items_from_right(right, req_count);
-        Ok(())
-    }
-
-    fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(self.is_deficient(), "'self' must be deficient");
-
-        let req_count = Self::ITEM_OCCUPANCY_THRESH - self.item_count();
-        let left_count = left.item_count();
-
-        if (left_count.saturating_sub(req_count)) < Self::ITEM_OCCUPANCY_THRESH {
-            return Err(RotateError::SiblingBecomesDeficient);
-        }
-
-        self.take_items_from_left(left, req_count);
-        Ok(())
-    }
-
-    fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
-    where
-        U: Deref<Target = Block>,
-    {
-        debug_assert!(
-            self.is_deficient() || right.is_deficient(),
-            "one of the branches must be deficient"
-        );
-
-        debug_assert!(
-            (self.item_count() + right.item_count()) <= Self::ITEM_CAPACITY,
-            "items of both branches must fit in a single branch"
-        );
-
-        self.insert_items_back(right.items());
-        Ok(())
-    }
-}
-
-impl<B> Rotate for Leaf<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    type Item = LeafItem;
-
-    fn rotate_left<U>(&mut self, right: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(self.is_deficient(), "'self' must be deficient");
-
-        let count = self.rotate_count(right, right.items().iter());
-        if count == 0 {
-            return Err(RotateError::SiblingBecomesDeficient);
-        }
-
-        self.take_from_right(right, count);
-        Ok(())
-    }
-
-    fn rotate_right<U>(&mut self, left: &mut Node<U, Self::Item>) -> Result<(), RotateError>
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(self.is_deficient(), "'self' must be deficient");
-
-        let count = self.rotate_count(left, left.items().iter().rev());
-        if count == 0 {
-            return Err(RotateError::SiblingBecomesDeficient);
-        }
-
-        self.take_from_left(left, count);
-        Ok(())
-    }
-
-    fn merge<U>(&mut self, right: &Node<U, Self::Item>) -> Result<(), MergeError>
-    where
-        U: Deref<Target = Block>,
-    {
-        debug_assert!(
-            self.is_deficient() || right.is_deficient(),
-            "one of the leafs must be deficient"
-        );
-
-        let right_items = right.items();
-        let right_data_size = BLOCK_SIZE as usize - usize::from(right.data_offset());
-
-        if !self.can_insert(right_items.len(), right_data_size) {
-            return Err(MergeError::Overflows);
-        }
-
-        self.copy_with_strategy(right, right_items.iter(), |node, key, data| {
-            node.insert_back(key, data)
-        });
-
-        Ok(())
-    }
-}
-
-pub(super) trait Split {
-    type Item;
-
-    /// Moves the second half of items from `self` into `right`.
-    fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
-    where
-        U: DerefMut<Target = Block>;
-}
-
-impl<B> Split for Branch<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    type Item = BranchItem;
-
-    fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(
-            self.item_count() > 1,
-            "branch with less than two items mustn't exist"
-        );
-        debug_assert_eq!(right.item_count(), 0, "'right' must be empty");
-
-        let item_count = self.item_count();
-        let count = item_count / 2;
-
-        right.take_items_from_left(self, count);
-    }
-}
-
-impl<B> Split for Leaf<B>
-where
-    B: DerefMut<Target = Block>,
-{
-    type Item = LeafItem;
-
-    fn split<U>(&mut self, right: &mut Node<U, Self::Item>)
-    where
-        U: DerefMut<Target = Block>,
-    {
-        debug_assert!(self.item_count() >= 2, "'self' must have at least 2 items");
-        debug_assert_eq!(right.item_count(), 0, "'right' must be empty");
-        let count = self.split_count();
-
-        right.take_from_left(self, count);
-    }
-}
-
-impl<B, I> Debug for Node<B, I>
-where
-    B: Deref<Target = Block>,
-    I: Item,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let height = self.height();
-        let name = if height == 0 { "Leaf" } else { "Branch" };
-        f.debug_struct(name)
-            .field("height", &height)
-            .field("items", &self.items())
-            .finish()
     }
 }
