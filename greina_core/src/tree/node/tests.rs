@@ -98,7 +98,7 @@ mod branch {
 
         assert!(matches!(
             branch.insert(key!(), 0),
-            Err(InsertError::Overflow)
+            Err(InsertError::Overfull)
         ));
     }
 
@@ -319,7 +319,7 @@ mod leaf {
 
         assert!(matches!(
             leaf.insert(key!(1), &data),
-            Err(InsertError::Overflow)
+            Err(InsertError::Overfull)
         ))
     }
 
