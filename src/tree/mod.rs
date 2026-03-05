@@ -16,10 +16,7 @@ pub struct Tree<S> {
     _storage: PhantomData<S>,
 }
 
-impl<S> Tree<S>
-where
-    S: Storage,
-{
+impl<S: Storage> Tree<S> {
     pub fn format(storage: &mut S, root_addr: BlockAddr) -> Result<()> {
         let mut block = Block::default();
         let _ = Leaf::format(&mut block, 0);
@@ -614,16 +611,10 @@ enum InsertError {
 }
 
 #[derive(Debug)]
-// TODO
-enum RotateError {
-    SiblingBecomesDeficient,
-}
+struct SiblingBecomesDeficient;
 
 #[derive(Debug)]
-// TODO
-enum MergeError {
-    Overflows,
-}
+struct Overflows;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
