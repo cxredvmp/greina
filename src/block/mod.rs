@@ -1,9 +1,9 @@
 pub mod allocator;
-
-pub use allocator::Allocator;
-pub use allocator::bitmap::BitmapAllocator;
-
 pub mod storage;
+
+pub use allocator::{Allocator, bitmap::BitmapAllocator};
+
+use core::ops::{Deref, DerefMut};
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned, little_endian::U64};
 
@@ -33,38 +33,48 @@ pub const BLOCK_SIZE: u64 = 4096;
 
 /// Fixed-sized byte sequence.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[derive(FromBytes, IntoBytes, Immutable, Unaligned, KnownLayout)]
-pub struct Block {
-    pub data: [u8; BLOCK_SIZE as usize],
-}
+pub struct Block([u8; BLOCK_SIZE as usize]);
 
 impl Block {
-    /// Constructs a `Block` with given data.
-    /// Length of `data` must be smaller or equal to `BLOCK_SIZE`.
+    /// Constructs a [Block] with given data.
+    /// Length of `data` must be smaller or equal to [BLOCK_SIZE].
     ///
     /// # Panics
-    /// Panics if:
-    /// - `data` is larger than `BLOCK_SIZE`
+    /// Panics if `data` is larger than [BLOCK_SIZE].
     pub fn new(data: &[u8]) -> Self {
         let mut block = Self::default();
-        block.data[..data.len()].copy_from_slice(data);
+        block[..data.len()].copy_from_slice(data);
         block
     }
 
-    /// Casts a byte slice into a `Block` slice without copying.
+    /// Casts a byte slice into a [Block] slice.
     ///
     /// # Panics
-    /// Panics if `bytes.len()` is not a multiple of `BLOCK_SIZE`.
+    /// Panics if `bytes.len()` is not a multiple of [BLOCK_SIZE].
     pub fn slice_from_bytes(bytes: &[u8]) -> &[Self] {
         <[Self]>::ref_from_bytes(bytes).unwrap()
     }
 }
 
+impl Deref for Block {
+    type Target = [u8; BLOCK_SIZE as usize];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Block {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl Default for Block {
     fn default() -> Self {
-        Self {
-            data: [0u8; BLOCK_SIZE as usize],
-        }
+        Self([0u8; BLOCK_SIZE as usize])
     }
 }

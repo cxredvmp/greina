@@ -130,14 +130,14 @@ pub mod storage {
         fn reads_from_inner() {
             let mut inner = MapStorage::default();
             let mut write_block = Block::default();
-            write_block.data.fill(0xAB);
+            write_block.fill(0xAB);
             inner.write_at(&write_block, 0).unwrap();
 
             let cached = BufStorage::new(&mut inner);
 
             let mut read_block = Block::default();
             cached.read_at(&mut read_block, 0).unwrap();
-            assert_eq!(read_block.data, write_block.data);
+            assert_eq!(read_block, write_block);
         }
 
         #[test]
@@ -146,12 +146,12 @@ pub mod storage {
             let mut cached = BufStorage::new(&mut inner);
 
             let mut write_block = Block::default();
-            write_block.data.fill(0xAB);
+            write_block.fill(0xAB);
             cached.write_at(&write_block, 0).unwrap();
 
             let mut read_block = Block::default();
             cached.read_at(&mut read_block, 0).unwrap();
-            assert_eq!(read_block.data, write_block.data);
+            assert_eq!(read_block, write_block);
 
             let mut inner_read_block = Block::default();
             assert!(cached.inner.read_at(&mut inner_read_block, 0).is_err());
@@ -165,8 +165,8 @@ pub mod storage {
             let mut write_block_1 = Block::default();
             let mut write_block_2 = Block::default();
 
-            write_block_1.data.fill(0xAB);
-            write_block_2.data.fill(0xCD);
+            write_block_1.fill(0xAB);
+            write_block_2.fill(0xCD);
 
             cached.write_at(&write_block_1, 0).unwrap();
             cached.write_at(&write_block_2, 1).unwrap();
@@ -179,8 +179,8 @@ pub mod storage {
             cached.inner.read_at(&mut inner_read_block_1, 0).unwrap();
             cached.inner.read_at(&mut inner_read_block_2, 1).unwrap();
 
-            assert_eq!(inner_read_block_1.data, write_block_1.data);
-            assert_eq!(inner_read_block_2.data, write_block_2.data);
+            assert_eq!(inner_read_block_1, write_block_1);
+            assert_eq!(inner_read_block_2, write_block_2);
         }
     }
 }

@@ -33,7 +33,7 @@ where
 {
     pub(super) fn try_new(block: B) -> Result<Self, Error> {
         let (header, _) =
-            Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
+            Header::try_ref_from_prefix(&block[..]).map_err(|_| Error::Uninterpretable)?;
         let node = if header.height.get() == 0 {
             Self::Leaf(Leaf::try_new(block)?)
         } else {
@@ -71,8 +71,8 @@ where
 
     pub(super) fn try_new(block: B) -> Result<Self, Error> {
         let (header, _) =
-            Header::try_ref_from_prefix(&block.data).map_err(|_| Error::Uninterpretable)?;
-        <[I]>::try_ref_from_prefix_with_elems(&block.data[HEADER_SIZE..], header.item_count.into())
+            Header::try_ref_from_prefix(&block[..]).map_err(|_| Error::Uninterpretable)?;
+        <[I]>::try_ref_from_prefix_with_elems(&block[HEADER_SIZE..], header.item_count.into())
             .map_err(|_| Error::Uninterpretable)?;
         Ok(Self {
             block,
@@ -85,7 +85,7 @@ where
     }
 
     fn data(&self) -> &[u8; BLOCK_SIZE as usize] {
-        &self.block.data
+        &self.block
     }
 
     fn header(&self) -> &Header {
@@ -170,12 +170,12 @@ where
     pub(super) fn format(mut block: B, height: u16) -> Self {
         let mut header = Header::default();
         header.height.set(height);
-        block.data[..HEADER_SIZE].copy_from_slice(header.as_bytes());
+        block[..HEADER_SIZE].copy_from_slice(header.as_bytes());
         Self::try_new(block).expect("'block' must be a valid node")
     }
 
     fn data_mut(&mut self) -> &mut [u8; BLOCK_SIZE as usize] {
-        &mut self.block.data
+        &mut self.block
     }
 
     fn header_mut(&mut self) -> &mut Header {

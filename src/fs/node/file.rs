@@ -60,7 +60,7 @@ impl File {
 
                     let src_start = offset_in_block as usize;
                     let src_end = src_start + chunk_size as usize;
-                    let src = &block.data[src_start..src_end];
+                    let src = &block[src_start..src_end];
 
                     dst.copy_from_slice(src);
 
@@ -136,7 +136,7 @@ impl File {
 
                 let dst_start = offset_in_block as usize;
                 let dst_end = dst_start + chunk_size as usize;
-                let dst = &mut block.data[dst_start..dst_end];
+                let dst = &mut block[dst_start..dst_end];
 
                 dst.copy_from_slice(src);
 
@@ -196,7 +196,7 @@ impl File {
         storage.read_at(&mut block, addr)?;
 
         let start = usize::try_from(remain).unwrap();
-        (&mut block.data[start..]).fill(0);
+        block[start..].fill(0);
 
         storage.write_at(&block, addr)?;
 

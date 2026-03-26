@@ -141,7 +141,7 @@ impl<S: Storage> Filesystem<S> {
     fn read_superblock(storage: &mut S) -> storage::Result<Superblock> {
         let mut block = Block::default();
         storage.read_at(&mut block, 0)?;
-        let (superblock, _) = Superblock::read_from_prefix(&block.data)
+        let (superblock, _) = Superblock::read_from_prefix(&block[..])
             .expect("'block.data' must be a valid 'Superblock'");
         Ok(superblock)
     }

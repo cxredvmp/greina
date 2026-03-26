@@ -36,40 +36,40 @@ pub mod tests {
     pub fn write_and_read<S: TestableStorage>() {
         let mut storage = S::new_for_test(4);
         let mut write_block = Block::default();
-        write_block.data.fill(0xAB);
+        write_block.fill(0xAB);
 
         storage.write_at(&write_block, 2).unwrap();
 
         let mut read_block = Block::default();
         storage.read_at(&mut read_block, 2).unwrap();
 
-        assert_eq!(read_block.data, write_block.data);
+        assert_eq!(read_block, write_block);
     }
 
     pub fn no_interference<S: TestableStorage>() {
         let mut storage = S::new_for_test(2);
 
         let mut write_block_0 = Block::default();
-        write_block_0.data.fill(0xAB);
+        write_block_0.fill(0xAB);
         storage.write_at(&write_block_0, 0).unwrap();
 
         let mut write_block_1 = Block::default();
-        write_block_1.data.fill(0xCD);
+        write_block_1.fill(0xCD);
         storage.write_at(&write_block_1, 1).unwrap();
 
         let mut read_block_0 = Block::default();
         storage.read_at(&mut read_block_0, 0).unwrap();
-        assert_eq!(read_block_0.data, write_block_0.data);
+        assert_eq!(read_block_0, write_block_0);
 
         let mut read_block_1 = Block::default();
         storage.read_at(&mut read_block_1, 1).unwrap();
-        assert_eq!(read_block_1.data, write_block_1.data);
+        assert_eq!(read_block_1, write_block_1);
     }
 
     pub fn out_of_bounds<S: TestableStorage>() {
         let mut storage = S::new_for_test(4);
         let mut write_block = Block::default();
-        write_block.data.fill(0xAB);
+        write_block.fill(0xAB);
 
         assert!(storage.read_at(&mut write_block, 4).is_err());
         assert!(storage.write_at(&write_block, 4).is_err());
@@ -78,19 +78,19 @@ pub mod tests {
     pub fn overwrite<S: TestableStorage>() {
         let mut storage = S::new_for_test(4);
         let mut write_block_1 = Block::default();
-        write_block_1.data.fill(0xAB);
+        write_block_1.fill(0xAB);
 
         storage.write_at(&write_block_1, 0).unwrap();
 
         let mut write_block_2 = Block::default();
-        write_block_2.data.fill(0xCD);
+        write_block_2.fill(0xCD);
 
         storage.write_at(&write_block_2, 0).unwrap();
 
         let mut read_block = Block::default();
         storage.read_at(&mut read_block, 0).unwrap();
 
-        assert_eq!(read_block.data, write_block_2.data);
+        assert_eq!(read_block, write_block_2);
     }
 }
 

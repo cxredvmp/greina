@@ -43,7 +43,7 @@ impl FileStorage {
 impl Storage for FileStorage {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
         self.file
-            .read_at(&mut block.data, addr * BLOCK_SIZE)
+            .read_at(&mut block[..], addr * BLOCK_SIZE)
             .into_errno()
             .and_then(|b| {
                 if b != BLOCK_SIZE as usize {
@@ -60,7 +60,7 @@ impl Storage for FileStorage {
         }
 
         self.file
-            .write_at(&block.data, addr * BLOCK_SIZE)
+            .write_at(&block[..], addr * BLOCK_SIZE)
             .into_errno()
             .and_then(|b| {
                 if b != BLOCK_SIZE as usize {
