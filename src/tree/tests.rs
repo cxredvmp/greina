@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
 use crate::{
-    block::{Allocator, BLOCK_SIZE, allocator::set::SetAllocator, storage::map::MapStorage},
+    block::{Allocator, BLOCK_SIZE, allocator::fake::FakeAllocator, storage::map::MapStorage},
     fs::node::NodeId,
     key, keys,
 };
@@ -108,7 +108,7 @@ impl ReferenceStateMachine for TreeStateReference {
 
 struct TreeState {
     storage: MapStorage,
-    block_alloc: SetAllocator,
+    block_alloc: FakeAllocator,
     root_addr: BlockAddr,
 }
 
@@ -140,7 +140,7 @@ impl TreeState {
 impl Default for TreeState {
     fn default() -> Self {
         let mut storage = MapStorage::default();
-        let mut block_alloc = SetAllocator::default();
+        let mut block_alloc = FakeAllocator::default();
         let root_addr = block_alloc
             .allocate(1)
             .expect("must be able to allocate root");

@@ -1,5 +1,5 @@
 #[cfg(test)]
-pub mod set;
+pub mod fake;
 
 pub mod bitmap;
 

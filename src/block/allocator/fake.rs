@@ -6,12 +6,12 @@ use crate::block::{
 };
 
 #[derive(Default)]
-pub struct SetAllocator {
+pub struct FakeAllocator {
     allocations: HashSet<BlockAddr>,
     next: BlockAddr,
 }
 
-impl Allocator for SetAllocator {
+impl Allocator for FakeAllocator {
     fn allocate(&mut self, count: u64) -> Result<BlockAddr> {
         let start = self.next;
         self.next += count;
