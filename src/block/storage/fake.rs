@@ -6,12 +6,12 @@ use crate::block::{
 };
 
 #[derive(Default)]
-pub struct MapStorage {
+pub struct FakeStorage {
     capacity: u64,
     blocks: HashMap<BlockAddr, Block>,
 }
 
-impl MapStorage {
+impl FakeStorage {
     pub fn new(capacity: u64) -> Self {
         Self {
             capacity,
@@ -20,7 +20,7 @@ impl MapStorage {
     }
 }
 
-impl Storage for MapStorage {
+impl Storage for FakeStorage {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
         *block = *self.blocks.get(&addr).ok_or(libc::EIO)?;
         Ok(())

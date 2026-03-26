@@ -1,5 +1,5 @@
 #[cfg(test)]
-pub mod map;
+pub mod fake;
 
 pub mod file;
 

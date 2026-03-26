@@ -124,11 +124,11 @@ pub mod storage {
     mod tests {
         use super::*;
 
-        use crate::block::storage::map::MapStorage;
+        use crate::block::storage::fake::FakeStorage;
 
         #[test]
         fn reads_from_inner() {
-            let mut inner = MapStorage::default();
+            let mut inner = FakeStorage::default();
             let mut write_block = Block::default();
             write_block.fill(0xAB);
             inner.write_at(&write_block, 0).unwrap();
@@ -142,7 +142,7 @@ pub mod storage {
 
         #[test]
         fn buffers_writes() {
-            let mut inner = MapStorage::default();
+            let mut inner = FakeStorage::default();
             let mut cached = BufStorage::new(&mut inner);
 
             let mut write_block = Block::default();
@@ -159,7 +159,7 @@ pub mod storage {
 
         #[test]
         fn syncs_writes_to_inner() {
-            let mut inner = MapStorage::default();
+            let mut inner = FakeStorage::default();
             let mut cached = BufStorage::new(&mut inner);
 
             let mut write_block_1 = Block::default();
