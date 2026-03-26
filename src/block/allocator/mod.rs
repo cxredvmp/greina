@@ -8,10 +8,10 @@ use crate::block::BlockAddr;
 /// An implementation of `Allocator` can manage block allocation.
 pub trait Allocator {
     /// Allocates `count` blocks, returning the starting address.
-    fn allocate(&mut self, count: u64) -> Result<BlockAddr>;
+    fn allocate(&self, count: u64) -> Result<BlockAddr>;
 
     /// Deallocates `count` blocks starting at `addr`.
-    fn deallocate(&mut self, start: BlockAddr, count: u64) -> Result<()>;
+    fn deallocate(&self, start: BlockAddr, count: u64) -> Result<()>;
 
     /// Returns the number of blocks available for allocation.
     fn available(&self) -> u64;
@@ -45,12 +45,12 @@ mod tests {
     }
 
     pub fn test_allocate<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         allocator.allocate(4).unwrap();
     }
 
     pub fn test_allocate_all<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
 
         for _ in 0..4 {
             allocator.allocate(4).unwrap();
@@ -58,7 +58,7 @@ mod tests {
     }
 
     pub fn test_allocate_fragmented<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
 
         allocator.allocate(4).unwrap();
         let addr = allocator.allocate(4).unwrap();
@@ -70,30 +70,30 @@ mod tests {
     }
 
     pub fn test_allocate_no_space<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         assert!(matches!(allocator.allocate(32), Err(Error::NoSpace)));
     }
 
     pub fn test_allocate_zero<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         allocator.allocate(0).unwrap();
     }
 
     pub fn test_deallocate<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         let addr = allocator.allocate(8).unwrap();
         allocator.deallocate(addr, 8).unwrap();
     }
 
     pub fn test_deallocate_part<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         let addr = allocator.allocate(12).unwrap();
         allocator.deallocate(addr, 4).unwrap();
         assert_eq!(allocator.available(), 8);
     }
 
     pub fn test_deallocate_out_of_bounds<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         assert!(matches!(
             allocator.deallocate(17, 1),
             Err(Error::AddrOutOfBounds)
@@ -101,7 +101,7 @@ mod tests {
     }
 
     pub fn test_deallocate_not_allocated<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         assert!(matches!(
             allocator.deallocate(0, 8),
             Err(Error::NotAllocated)
@@ -109,7 +109,7 @@ mod tests {
     }
 
     pub fn test_available<A: TestableAllocator>() {
-        let mut allocator = A::new_for_test(16);
+        let allocator = A::new_for_test(16);
         assert_eq!(allocator.available(), 16);
 
         let addr = allocator.allocate(8).unwrap();
