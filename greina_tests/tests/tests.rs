@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use tempfile::TempDir;
 
-const MKFS_BIN: &str = env!("CARGO_BIN_EXE_mkfs");
-const MOUNT_BIN: &str = env!("CARGO_BIN_EXE_mount");
+const MKFS_BIN: &str = env!("CARGO_BIN_FILE_GREINA_MKFS_greina_mkfs");
+const MOUNT_BIN: &str = env!("CARGO_BIN_FILE_GREINA_MOUNT_greina_mount");
 
 struct MountedContext {
     mount_process: Child,

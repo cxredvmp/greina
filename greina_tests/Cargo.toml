@@ -1,0 +1,9 @@
+[package]
+name = "greina_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+greina_mkfs = { path = "../greina_mkfs", artifact = "bin" }
+greina_mount = { path = "../greina_mount", artifact = "bin" }
+tempfile = "3.27.0"

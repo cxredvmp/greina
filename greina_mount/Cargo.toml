@@ -1,0 +1,13 @@
+[package]
+name = "greina_mount"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+env_logger = "0.11.10"
+fuser = { version = "0.17.0" }
+greina_core = { path = "../greina_core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.17.0", features = ["libfuse"] }

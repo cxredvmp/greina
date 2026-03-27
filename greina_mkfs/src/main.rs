@@ -1,4 +1,4 @@
-use greina::{block::storage::file::FileStorage, fs::Filesystem};
+use greina_core::{block::storage::file::FileStorage, fs::Filesystem};
 
 fn usage() -> ! {
     eprintln!("mkfs.greina device");

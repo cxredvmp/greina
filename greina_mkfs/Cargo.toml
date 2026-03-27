@@ -1,0 +1,8 @@
+[package]
+name = "greina_mkfs"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+greina_core = { path = "../greina_core" }
