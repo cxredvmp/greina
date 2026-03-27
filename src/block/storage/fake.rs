@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::RwLock};
 
 use crate::block::{
     Block, BlockAddr,
@@ -7,20 +7,32 @@ use crate::block::{
 
 #[derive(Default)]
 pub struct FakeStorage {
-    capacity: u64,
-    blocks: HashMap<BlockAddr, Block>,
-}
-
-impl FakeStorage {
-    pub fn new(capacity: u64) -> Self {
-        Self {
-            capacity,
-            ..Default::default()
-        }
-    }
+    inner: RwLock<FakeStorageInner>,
 }
 
 impl Storage for FakeStorage {
+    fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
+        let inner = self.inner.read().unwrap();
+        inner.read_at(block, addr)
+    }
+
+    fn write_at(&self, block: &Block, addr: BlockAddr) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        inner.write_at(block, addr)
+    }
+
+    fn capacity(&self) -> Result<u64> {
+        let inner = self.inner.read().unwrap();
+        inner.capacity()
+    }
+}
+
+#[derive(Default)]
+struct FakeStorageInner {
+    blocks: HashMap<BlockAddr, Block>,
+}
+
+impl FakeStorageInner {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()> {
         *block = *self.blocks.get(&addr).ok_or(libc::EIO)?;
         Ok(())
@@ -32,6 +44,6 @@ impl Storage for FakeStorage {
     }
 
     fn capacity(&self) -> Result<u64> {
-        Ok(self.capacity)
+        Ok(0)
     }
 }

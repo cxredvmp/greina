@@ -54,7 +54,7 @@ impl Storage for FileStorage {
             })
     }
 
-    fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()> {
+    fn write_at(&self, block: &Block, addr: BlockAddr) -> Result<()> {
         if addr >= self.capacity()? {
             return Err(libc::EIO);
         }

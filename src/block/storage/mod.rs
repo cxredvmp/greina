@@ -12,7 +12,7 @@ pub trait Storage {
     fn read_at(&self, block: &mut Block, addr: BlockAddr) -> Result<()>;
 
     /// Writes `block` into the block at `addr`.
-    fn write_at(&mut self, block: &Block, addr: BlockAddr) -> Result<()>;
+    fn write_at(&self, block: &Block, addr: BlockAddr) -> Result<()>;
 
     /// Returns the number of blocks the storage can hold.
     fn capacity(&self) -> Result<u64>;
@@ -34,7 +34,7 @@ pub mod tests {
     }
 
     pub fn write_and_read<S: TestableStorage>() {
-        let mut storage = S::new_for_test(4);
+        let storage = S::new_for_test(4);
         let mut write_block = Block::default();
         write_block.fill(0xAB);
 
@@ -47,7 +47,7 @@ pub mod tests {
     }
 
     pub fn no_interference<S: TestableStorage>() {
-        let mut storage = S::new_for_test(2);
+        let storage = S::new_for_test(2);
 
         let mut write_block_0 = Block::default();
         write_block_0.fill(0xAB);
@@ -67,7 +67,7 @@ pub mod tests {
     }
 
     pub fn out_of_bounds<S: TestableStorage>() {
-        let mut storage = S::new_for_test(4);
+        let storage = S::new_for_test(4);
         let mut write_block = Block::default();
         write_block.fill(0xAB);
 
@@ -76,7 +76,7 @@ pub mod tests {
     }
 
     pub fn overwrite<S: TestableStorage>() {
-        let mut storage = S::new_for_test(4);
+        let storage = S::new_for_test(4);
         let mut write_block_1 = Block::default();
         write_block_1.fill(0xAB);
 
